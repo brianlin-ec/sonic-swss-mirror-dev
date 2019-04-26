@@ -38,6 +38,7 @@ extern RouteOrch* gRouteOrch;
 extern IntfsOrch* gIntfsOrch;
 extern NeighOrch* gNeighOrch;
 extern FdbOrch* gFdbOrch;
+extern BufferOrch* gBufferOrch;
 VRFOrch* gVrfOrch;
 
 extern sai_switch_api_t* sai_switch_api;
@@ -45,50 +46,26 @@ extern sai_port_api_t* sai_port_api;
 extern sai_vlan_api_t* sai_vlan_api;
 extern sai_bridge_api_t* sai_bridge_api;
 extern sai_route_api_t* sai_route_api;
+extern sai_router_interface_api_t* sai_router_intfs_api;
 extern sai_mirror_api_t* sai_mirror_api;
 extern sai_hostif_api_t* sai_hostif_api;
+extern sai_neighbor_api_t* sai_neighbor_api;
+extern sai_next_hop_api_t *sai_next_hop_api;
 
-size_t consumerAddToSync(Consumer* consumer, const std::deque<KeyOpFieldsValuesTuple>& entries)
+class ConsumerExtend : public Consumer
 {
-    /* Nothing popped */
-    if (entries.empty()) {
+  public:
+    ConsumerExtend(ConsumerTableBase *select, Orch *orch, const string &name) : Consumer(select, orch, name)
+    {
+    }
+
+    size_t addToSync(std::deque<KeyOpFieldsValuesTuple> &entries)
+    {
+        Consumer::addToSync(entries);
         return 0;
     }
+};
 
-    for (auto& entry : entries) {
-        string key = kfvKey(entry);
-        string op = kfvOp(entry);
-
-        /* If a new task comes or if a DEL task comes, we directly put it into getConsumerTable().m_toSync map */
-        if (consumer->m_toSync.find(key) == consumer->m_toSync.end() || op == DEL_COMMAND) {
-            consumer->m_toSync[key] = entry;
-        }
-        /* If an old task is still there, we combine the old task with new task */
-        else {
-            KeyOpFieldsValuesTuple existing_data = consumer->m_toSync[key];
-
-            auto new_values = kfvFieldsValues(entry);
-            auto existing_values = kfvFieldsValues(existing_data);
-
-            for (auto it : new_values) {
-                string field = fvField(it);
-                string value = fvValue(it);
-
-                auto iu = existing_values.begin();
-                while (iu != existing_values.end()) {
-                    string ofield = fvField(*iu);
-                    if (field == ofield)
-                        iu = existing_values.erase(iu);
-                    else
-                        iu++;
-                }
-                existing_values.push_back(FieldValueTuple(field, value));
-            }
-            consumer->m_toSync[key] = KeyOpFieldsValuesTuple(key, op, existing_values);
-        }
-    }
-    return entries.size();
-}
 const char* profile_get_value(
     _In_ sai_switch_profile_id_t profile_id,
     _In_ const char* variable)
@@ -130,27 +107,6 @@ struct TestBase : public ::testing::Test {
     //
     // spy functions
     //
-    static sai_status_t sai_create_switch_(_Out_ sai_object_id_t* switch_id,
-        _In_ uint32_t attr_count,
-        _In_ const sai_attribute_t* attr_list)
-    {
-        return that->sai_create_switch_fn(switch_id, attr_count, attr_list);
-    }
-
-    static sai_status_t sai_get_switch_attribute_(_In_ sai_object_id_t switch_id,
-        _In_ uint32_t attr_count,
-        _Inout_ sai_attribute_t* attr_list)
-    {
-        return that->sai_get_switch_attribute_fn(switch_id, attr_count, attr_list);
-    }
-
-    static sai_status_t sai_get_port_attribute_(_In_ sai_object_id_t port_id,
-        _In_ uint32_t attr_count,
-        _Inout_ sai_attribute_t* attr_list)
-    {
-        return that->sai_get_port_attribute_fn(port_id, attr_count, attr_list);
-    }
-
     static sai_status_t sai_get_vlan_attribute_(_In_ sai_object_id_t vlan_id,
         _In_ uint32_t attr_count,
         _Inout_ sai_attribute_t* attr_list)
@@ -182,13 +138,6 @@ struct TestBase : public ::testing::Test {
         return that->sai_remove_bridge_port_fn(bridge_port_id);
     }
 
-    static sai_status_t sai_create_route_entry_(_In_ const sai_route_entry_t* route_entry,
-        _In_ uint32_t attr_count,
-        _In_ const sai_attribute_t* attr_list)
-    {
-        return that->sai_create_route_entry_fn(route_entry, attr_count, attr_list);
-    }
-
     static sai_status_t sai_create_hostif_(_Out_ sai_object_id_t* hostif_id,
         _In_ sai_object_id_t switch_id,
         _In_ uint32_t attr_count,
@@ -205,15 +154,6 @@ struct TestBase : public ::testing::Test {
 
     static TestBase* that;
 
-    std::function<sai_status_t(sai_object_id_t*, uint32_t, const sai_attribute_t*)>
-        sai_create_switch_fn;
-
-    std::function<sai_status_t(sai_object_id_t, uint32_t, sai_attribute_t*)>
-        sai_get_switch_attribute_fn;
-
-    std::function<sai_status_t(sai_object_id_t, uint32_t, sai_attribute_t*)>
-        sai_get_port_attribute_fn;
-
     std::function<sai_status_t(sai_object_id_t, uint32_t, sai_attribute_t*)>
         sai_get_vlan_attribute_fn;
 
@@ -228,9 +168,6 @@ struct TestBase : public ::testing::Test {
 
     std::function<sai_status_t(sai_object_id_t)>
         sai_remove_bridge_port_fn;
-
-    std::function<sai_status_t(const sai_route_entry_t*, uint32_t, const sai_attribute_t*)>
-        sai_create_route_entry_fn;
 
     std::function<sai_status_t(sai_object_id_t*, sai_object_id_t, uint32_t, const sai_attribute_t*)>
         sai_create_hostif_fn;
@@ -312,6 +249,7 @@ struct MirrorTest : public TestBase {
         assert(gVrfOrch == nullptr);
         assert(gCrmOrch == nullptr);
         assert(gPortsOrch == nullptr);
+        assert(gBufferOrch == nullptr);
 
         ///////////////////////////////////////////////////////////////////////
         sai_service_method_table_t test_services = {
@@ -324,32 +262,42 @@ struct MirrorTest : public TestBase {
 
         // FIXME: using clone not just assign
         sai_switch_api = const_cast<sai_switch_api_t*>(&vs_switch_api);
+        sai_port_api = const_cast<sai_port_api_t*>(&vs_port_api);
+        sai_route_api = const_cast<sai_route_api_t*>(&vs_route_api);
+        sai_router_intfs_api = const_cast<sai_router_interface_api_t*>(&vs_router_interface_api);
+        sai_neighbor_api = const_cast<sai_neighbor_api_t*>(&vs_neighbor_api);
+        sai_next_hop_api = const_cast<sai_next_hop_api_t*>(&vs_next_hop_api);
+        sai_mirror_api = const_cast<sai_mirror_api_t*>(&vs_mirror_api);
 
-        sai_attribute_t swattr;
+        sai_attribute_t attr;
 
-        swattr.id = SAI_SWITCH_ATTR_INIT_SWITCH;
-        swattr.value.booldata = true;
+        attr.id = SAI_SWITCH_ATTR_INIT_SWITCH;
+        attr.value.booldata = true;
 
-        status = sai_switch_api->create_switch(&gSwitchId, 1, &swattr);
+        status = sai_switch_api->create_switch(&gSwitchId, 1, &attr);
         ASSERT_TRUE(status == SAI_STATUS_SUCCESS);
+        
+        // Get switch source MAC address
+        attr.id = SAI_SWITCH_ATTR_SRC_MAC_ADDRESS;
+        status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
+
+        ASSERT_TRUE(status == SAI_STATUS_SUCCESS);
+
+        gMacAddress = attr.value.mac;
+
+        // Get the default virtual router ID
+        attr.id = SAI_SWITCH_ATTR_DEFAULT_VIRTUAL_ROUTER_ID;
+        status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
+
+        ASSERT_TRUE(status == SAI_STATUS_SUCCESS);
+
+        gVirtualRouterId = attr.value.oid;
         ///////////////////////////////////////////////////////////////////////
 
-        // assert(sai_switch_api == nullptr);
-        assert(sai_port_api == nullptr);
         assert(sai_vlan_api == nullptr);
         assert(sai_bridge_api == nullptr);
-        assert(sai_route_api == nullptr);
-        assert(sai_mirror_api == nullptr);
         assert(sai_hostif_api == nullptr);
 
-        // auto sai_switch = std::shared_ptr<sai_switch_api_t>(new sai_switch_api_t(), [](sai_switch_api_t* p) {
-        //     delete p;
-        //     sai_switch_api = nullptr;
-        // });
-        auto sai_port = std::shared_ptr<sai_port_api_t>(new sai_port_api_t(), [](sai_port_api_t* p) {
-            delete p;
-            sai_port_api = nullptr;
-        });
         auto sai_vlan = std::shared_ptr<sai_vlan_api_t>(new sai_vlan_api_t(), [](sai_vlan_api_t* p) {
             delete p;
             sai_vlan_api = nullptr;
@@ -358,54 +306,23 @@ struct MirrorTest : public TestBase {
             delete p;
             sai_bridge_api = nullptr;
         });
-        auto sai_route = std::shared_ptr<sai_route_api_t>(new sai_route_api_t(), [](sai_route_api_t* p) {
-            delete p;
-            sai_route_api = nullptr;
-        });
         auto sai_hostif = std::shared_ptr<sai_hostif_api_t>(new sai_hostif_api_t(), [](sai_hostif_api_t* p) {
             delete p;
             sai_hostif_api = nullptr;
         });
 
-        // sai_switch_api = sai_switch.get();
-        sai_port_api = sai_port.get();
         sai_vlan_api = sai_vlan.get();
         sai_bridge_api = sai_bridge.get();
-        sai_route_api = sai_route.get();
         sai_hostif_api = sai_hostif.get();
 
-        // sai_switch_api->get_switch_attribute = sai_get_switch_attribute_;
-        sai_port_api->get_port_attribute = sai_get_port_attribute_;
         sai_vlan_api->get_vlan_attribute = sai_get_vlan_attribute_;
         sai_vlan_api->remove_vlan_member = sai_remove_vlan_member_;
         sai_bridge_api->get_bridge_attribute = sai_get_bridge_attribute_;
         sai_bridge_api->get_bridge_port_attribute = sai_get_bridge_port_attribute_;
         sai_bridge_api->remove_bridge_port = sai_remove_bridge_port_;
-        sai_route_api->create_route_entry = sai_create_route_entry_;
         sai_hostif_api->create_hostif = sai_create_hostif_;
         sai_hostif_api->set_hostif_attribute = sai_set_hostif_attribute_;
         that = this;
-
-        sai_create_switch_fn =
-            [](_Out_ sai_object_id_t* switch_id,
-                _In_ uint32_t attr_count,
-                _In_ const sai_attribute_t* attr_list) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        // sai_get_switch_attribute_fn =
-        //     [](_In_ sai_object_id_t switch_id,
-        //         _In_ uint32_t attr_count,
-        //         _Inout_ sai_attribute_t* attr_list) -> sai_status_t {
-        //     return SAI_STATUS_SUCCESS;
-        // };
-
-        sai_get_port_attribute_fn =
-            [](_In_ sai_object_id_t port_id,
-                _In_ uint32_t attr_count,
-                _Inout_ sai_attribute_t* attr_list) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
 
         sai_get_vlan_attribute_fn =
             [](_In_ sai_object_id_t vlan_id,
@@ -435,13 +352,6 @@ struct MirrorTest : public TestBase {
 
         sai_remove_bridge_port_fn =
             [](_In_ sai_object_id_t bridge_port_id) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_create_route_entry_fn =
-            [](_In_ const sai_route_entry_t* route_entry,
-                _In_ uint32_t attr_count,
-                _In_ const sai_attribute_t* attr_list) -> sai_status_t {
             return SAI_STATUS_SUCCESS;
         };
 
@@ -480,13 +390,36 @@ struct MirrorTest : public TestBase {
         TableConnector stateDbFdb(m_state_db.get(), STATE_FDB_TABLE_NAME);
         gFdbOrch = new FdbOrch(applDbFdb, stateDbFdb, gPortsOrch);
 
-        auto consumer = std::unique_ptr<Consumer>(new Consumer(new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
+        vector<string> buffer_tables = {
+            CFG_BUFFER_POOL_TABLE_NAME,
+            CFG_BUFFER_PROFILE_TABLE_NAME,
+            CFG_BUFFER_QUEUE_TABLE_NAME,
+            CFG_BUFFER_PG_TABLE_NAME,
+            CFG_BUFFER_PORT_INGRESS_PROFILE_LIST_NAME,
+            CFG_BUFFER_PORT_EGRESS_PROFILE_LIST_NAME
+        };
+        gBufferOrch = new BufferOrch(m_config_db.get(), buffer_tables);
+
+        auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+            new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
         auto setData = std::deque<KeyOpFieldsValuesTuple>(
-            { { "PortInitDone",
-                EMPTY_PREFIX,
-                { { "", "" } } } });
-        consumerAddToSync(consumer.get(), setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
+            { { "Ethernet0",
+                  SET_COMMAND,
+                  {
+                      { "lanes", "29,30,31,32" },
+                      { "alias", "Ethernet0" },
+                      { "oper_status", "up" },
+                      { "mtu", "9100" },
+                      { "admin_status", "up" },
+                  } },
+                { "PortConfigDone",
+                    SET_COMMAND,
+                    { { "count", "1" } } },
+                { "PortInitDone",
+                    EMPTY_PREFIX,
+                    { { "", "" } } } });
+        consumerExt->addToSync(setData);
+        static_cast<Orch*>(gPortsOrch)->doTask(*consumerExt);
     }
 
     void TearDown() override
@@ -505,6 +438,8 @@ struct MirrorTest : public TestBase {
         gPortsOrch = nullptr;
         delete gCrmOrch; // FIXME: using auto ptr
         gCrmOrch = nullptr;
+        delete gBufferOrch; // FIXME: using auto ptr
+        gBufferOrch = nullptr;
 
         ///////////////////////////////////////////////////////////////////////
 
@@ -518,44 +453,13 @@ struct MirrorTest : public TestBase {
     }
 };
 
-TEST_F(MirrorTest, Create_Mirror_Session)
-{
-    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
-
-    auto consumer = std::unique_ptr<Consumer>(new Consumer(
-        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-    std::string mirror_session_name = "mirror_session_1";
-    auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
-            SET_COMMAND,
-            {
-                { "src_ip", "1.1.1.1" },
-                { "dst_ip", "2.2.2.2" },
-                { "gre_type", "0x6558" },
-                { "dscp", "8" },
-                { "ttl", "100" },
-                { "queue", "0" },
-            } } });
-
-    consumerAddToSync(consumer.get(), mirror_cfg);
-
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumer);
-
-    bool session_state;
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_TRUE(session_state == false); //session inactive
-    //TODO: validate session fields
-}
-
 TEST_F(MirrorTest, Create_And_Delete_Mirror_Session)
 {
     TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
     TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
     auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
 
-    auto consumer = std::unique_ptr<Consumer>(new Consumer(
+    auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
         new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
     std::string mirror_session_name = "mirror_session_1";
     auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
@@ -569,10 +473,9 @@ TEST_F(MirrorTest, Create_And_Delete_Mirror_Session)
                 { "ttl", "100" },
                 { "queue", "0" },
             } } });
+    consumerExt->addToSync(mirror_cfg);
 
-    consumerAddToSync(consumer.get(), mirror_cfg);
-
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumer);
+    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
 
     bool session_state;
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
@@ -585,45 +488,59 @@ TEST_F(MirrorTest, Create_And_Delete_Mirror_Session)
             {
                 { "", "" },
             } } });
+    consumerExt->addToSync(del_cfg);
 
-    consumerAddToSync(consumer.get(), del_cfg);
-
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumer);
+    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
 
     ASSERT_TRUE(false == mirror_orch.sessionExists(mirror_session_name)); // session not exist
 }
 
-// TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
-// {
-//     TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-//     TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-//     auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
+{
+    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
+    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
+    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
 
-//     auto consumer = std::unique_ptr<Consumer>(new Consumer(
-//         new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-//     std::string mirror_session_name = "mirror_session_1";
-//     auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
-//         { { mirror_session_name,
-//             SET_COMMAND,
-//             {
-//                 { "src_ip", "1.1.1.1" },
-//                 { "dst_ip", "2.2.2.2" },
-//                 { "gre_type", "0x6558" },
-//                 { "dscp", "8" },
-//                 { "ttl", "100" },
-//                 { "queue", "0" },
-//             } } });
+    auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
+    std::string mirror_session_name = "mirror_session_1";
+    auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
+        { { mirror_session_name,
+            SET_COMMAND,
+            {
+                { "src_ip", "1.1.1.1" },
+                { "dst_ip", "2.2.2.2" },
+                { "gre_type", "0x6558" },
+                { "dscp", "8" },
+                { "ttl", "100" },
+                { "queue", "0" },
+            } } });
+    consumerExt->addToSync(mirror_cfg);
 
-//     consumerAddToSync(consumer.get(), mirror_cfg);
+    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
 
-//     static_cast<Orch*>(&mirror_orch)->doTask(*consumer);
+    bool session_state;
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == false); //session inactive
+    //TODO: validate session fields
 
-//     bool session_state;
-//     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-//     ASSERT_TRUE(session_state == false); //session inactive
-//     //TODO: validate session fields
+    auto setData = std::deque<KeyOpFieldsValuesTuple>(
+          { { "Ethernet0:192.168.1.1/24",
+              SET_COMMAND,
+              { }
+          } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
 
-//     NeighborEntry neighborEntry = { IpAddress("2.2.2.2"), "Ethernet0" };
-//     NeighborUpdate update = { neighborEntry, MacAddress("00:01:02:03:04:05"), true };
-//     mirror_orch.update(SUBJECT_TYPE_NEIGH_CHANGE, static_cast<void*>(&update));
-// }
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+          { { "Ethernet0:2.2.2.2",
+              SET_COMMAND,
+              {{"neigh", "00:01:02:03:04:05"}}
+          } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == true); //session active
+
+}
