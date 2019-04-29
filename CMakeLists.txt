@@ -116,6 +116,8 @@ file(GLOB ORCH_HEADERS
     ${SWSS_PATH}/orchagent/watermarkorch.h
 )
 
+# TODO: Link to lib build by autoconfig
+# TODO: Just can see source code (group), set as HEADER_FILE_ONLY
 add_library(orchagent
     ${ORCH_SRCS}
     ${ORCH_HEADERS}
@@ -136,9 +138,19 @@ target_link_libraries(orchagent
 #################################################################
 
 ## aclTest ######################################################
+
+configure_file (
+    tests/spec_auto_config.h.in
+    ${PROJECT_BINARY_DIR}/tests/spec_auto_config.h
+)
+
 file(GLOB TESTS
     main.cpp
-    tests/test_aclorch.cpp
+    tests/fake_main.cpp
+    tests/aclorch_ut.cpp
+    tests/copporch_ut.cpp
+    tests/qosorch_ut.cpp
+    tests/saispy_ut.cpp
 )
 
 file(GLOB SRCS
@@ -163,5 +175,7 @@ add_executable(${PROJECT_NAME}
    ${TESTS}
 )
 
+set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "tests.out")
+target_include_directories(${PROJECT_NAME} PRIVATE ${PROJECT_BINARY_DIR}/tests)
 target_link_libraries(${PROJECT_NAME} ${GTEST_LIBRARIES})
-target_link_libraries(${PROJECT_NAME} pthread hiredis swsscommon sairedis saimetadata orchagent)
+target_link_libraries(${PROJECT_NAME} pthread hiredis swsscommon saimeta saimetadata orchagent saivs sairedis)

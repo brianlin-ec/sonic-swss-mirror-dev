@@ -1,49 +1,24 @@
-# Introduction
-ACL unit test environment for SONiC
+## Introduction
+Unit test environment for SONiC sonic-swss/orchagent
 
-# Getting Started
-## Install requirment tools
+## Getting Started
 ```
-sudo apt update
+git clone https://github.com/ezio-chen/sonic-swss-dev
+cd sonic-swss-dev/
 
-# sswss-common
-sudo apt-get install -y make libtool m4 autoconf dh-exec debhelper cmake pkg-config \
-                        libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev swig3.0 \
-                        libpython-dev g++ python python-dev
+sudo bash -x install-pkg.sh -g
 
-# googletest
-mkdir -p /tmp/gtest && cd /tmp/gtest
-git clone https://github.com/google/googletest.git
-cd googletest && cmake . && make && sudo make install
+cd ..
+mkdir <build-dir> && cd <build-dir>
+bash -x <source-dir>/build.sh
+source packages/.env
 
-# SAI
-sudo apt install -y doxygen graphviz aspell
 
-# sonic-swss
-sudo apt-get install -y libhiredis0.13
+# Run the tests
+## Start the redis-server with UNIX socket at the first time
+bash -x <build-dir>/redis/start_redis.sh
 
-# install perl  module
-sudo perl -MCPAN -e "install XML::Simple"
-## If meet some problemes, you can try to install by apt-get
-## sudo apt install -y libxml-simple-perl
-```
+<build-dir>/tests.out
 
-## Starting redis-server and open UNIX socket
-```
-sudo apt install -y redis-server
-sudo mkdir -p /var/run/redis/
-echo "unixsocket /var/run/redis/redis.sock" | sudo tee --append  /etc/redis/redis.conf
-echo "unixsocketperm 777" | sudo tee --append  /etc/redis/redis.conf
-sudo service redis-server restart
-```
-
-## Build the test environment
-```
-git clone --recurse-submodules https://github.com/ezio-chen/sonic-swss-acl-dev.git
-cd sonic-swss-acl-dev
-
-# Create build environment and build
-mkdir -p <build dir> && cd <build_dir>
-sh <source_dir>/build.sh
-make
-```
+## Stop the redis-server after you don't need it.
+bash -x redis/stop_redis.sh
