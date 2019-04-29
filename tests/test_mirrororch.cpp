@@ -9,8 +9,6 @@
 
 void syncd_apply_view() {}
 
-using namespace std;
-
 /* Global variables */
 sai_object_id_t gVirtualRouterId;
 sai_object_id_t gUnderlayIfId;
@@ -26,11 +24,6 @@ bool gSwssRecord = true;
 bool gLogRotate = false;
 ofstream gRecordOfs;
 string gRecordFile;
-
-uint32_t set_attr_count;
-sai_attribute_t set_attr_list[20];
-vector<int32_t> bpoint_list;
-vector<int32_t> range_types_list;
 
 extern CrmOrch* gCrmOrch;
 extern PortsOrch* gPortsOrch;
@@ -51,6 +44,10 @@ extern sai_mirror_api_t* sai_mirror_api;
 extern sai_hostif_api_t* sai_hostif_api;
 extern sai_neighbor_api_t* sai_neighbor_api;
 extern sai_next_hop_api_t *sai_next_hop_api;
+
+namespace nsMirrorOrchTest {
+
+using namespace std;
 
 class ConsumerExtend : public Consumer
 {
@@ -543,4 +540,62 @@ TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == true); //session active
 
+    sai_object_id_t session_oid;
+    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+
+    sai_object_id_t port_oid;
+    Port p;
+    ASSERT_TRUE(gPortsOrch->getPort("Ethernet0", p));
+
+    sai_attribute_t attr;
+    attr.id = SAI_MIRROR_SESSION_ATTR_MONITOR_PORT;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.oid == p.m_port_id);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_TYPE;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.s32 == SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_ERSPAN_ENCAPSULATION_TYPE;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.s32 == SAI_ERSPAN_ENCAPSULATION_TYPE_MIRROR_L3_GRE_TUNNEL);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_IPHDR_VERSION;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u8 == 4);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_TOS;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == 32);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_TTL;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == 100);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_SRC_IP_ADDRESS;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    char addr[20];
+    sai_serialize_ip4(addr, attr.value.ipaddr.addr.ip4);
+    ASSERT_TRUE(std::string(addr) == "1.1.1.1");
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_DST_IP_ADDRESS;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    sai_serialize_ip4(addr, attr.value.ipaddr.addr.ip4);
+    ASSERT_TRUE(std::string(addr) == "2.2.2.2");
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_SRC_MAC_ADDRESS;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    char mac[6];
+    sai_serialize_mac(mac, attr.value.mac);
+    ASSERT_TRUE(std::string(mac) == gMacAddress.to_string());
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    sai_serialize_mac(mac, attr.value.mac);
+    ASSERT_TRUE(std::string(mac) == "00:01:02:03:04:05");
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_GRE_PROTOCOL_TYPE;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == 0x6558);
+}
 }
