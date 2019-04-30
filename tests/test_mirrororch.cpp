@@ -6,6 +6,7 @@
 #include "sai_vs.h"
 #include "saiattributelist.h"
 #include "saihelper.h"
+#include "converter.h"
 
 void syncd_apply_view() {}
 
@@ -229,7 +230,6 @@ struct MirrorTest : public TestBase {
 
     MirrorTest()
     {
-
         m_app_db = std::make_shared<swss::DBConnector>(APPL_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
         m_config_db = std::make_shared<swss::DBConnector>(CONFIG_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
         m_state_db = std::make_shared<swss::DBConnector>(STATE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
@@ -447,6 +447,89 @@ struct MirrorTest : public TestBase {
         sai_api_uninitialize();
 
         sai_switch_api = nullptr;
+        sai_port_api = nullptr;
+        sai_route_api = nullptr;
+        sai_router_intfs_api = nullptr;
+        sai_neighbor_api = nullptr;
+        sai_next_hop_api = nullptr;
+        sai_mirror_api = nullptr;
+    }
+
+    std::shared_ptr<SaiAttributeList> getMirrorAttributeList(const std::vector<swss::FieldValueTuple>& values)
+    {
+        std::vector<swss::FieldValueTuple> fields;
+
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TYPE", "SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE" });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_ERSPAN_ENCAPSULATION_TYPE", "SAI_ERSPAN_ENCAPSULATION_TYPE_MIRROR_L3_GRE_TUNNEL" });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_IPHDR_VERSION", "4" });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_SRC_MAC_ADDRESS", gMacAddress.to_string() });
+
+        for (auto it : values) {
+            if (fvField(it) == "src_ip")
+                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_SRC_IP_ADDRESS", fvValue(it) });
+            else if (fvField(it) == "dst_ip")
+                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_DST_IP_ADDRESS", fvValue(it) });
+            else if (fvField(it) == "gre_type")
+            {
+                uint16_t greType = to_uint<uint16_t>(fvValue(it));
+                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_GRE_PROTOCOL_TYPE", to_string(greType) });
+            }
+            else if (fvField(it) == "dscp")
+            {
+                uint16_t tos = to_uint<uint8_t>(fvValue(it)) << 2;
+                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TOS", to_string(tos) });
+            }
+            else if (fvField(it) == "ttl")
+                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TTL", fvValue(it) });
+            else if (fvField(it) == "queue")
+            {
+                if ((uint8_t)stoi(fvValue(it)) != 0)
+                    fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TC", fvValue(it) });
+            }
+        }
+
+        return std::shared_ptr<SaiAttributeList>(new SaiAttributeList(SAI_OBJECT_TYPE_MIRROR_SESSION, fields, false));
+    }
+
+    bool Validate(sai_object_type_t objecttype, sai_object_id_t object_id, SaiAttributeList& exp_attrlist)
+    {
+        std::vector<sai_attribute_t> act_attr;
+
+        for (int i = 0; i < exp_attrlist.get_attr_count(); ++i) {
+            const auto attr = exp_attrlist.get_attr_list()[i];
+            auto meta = sai_metadata_get_attr_metadata(objecttype, attr.id);
+
+            if (meta == nullptr) {
+                return false;
+            }
+
+            sai_attribute_t new_attr = { 0 };
+            new_attr.id = attr.id;
+
+            // switch (meta->attrvaluetype) {
+            // case SAI_ATTR_VALUE_TYPE_INT32_LIST:
+            //     new_attr.value.s32list.list = (int32_t*)malloc(sizeof(int32_t) * attr.value.s32list.count);
+            //     new_attr.value.s32list.count = attr.value.s32list.count;
+            //     m_s32list_pool.emplace_back(new_attr.value.s32list.list);
+            //     break;
+
+            // default:
+            //     std::cout << "";
+            //     ;
+            // }
+
+            act_attr.emplace_back(new_attr);
+        }
+
+        auto status = sai_mirror_api->get_mirror_session_attribute(object_id, act_attr.size(), act_attr.data());
+        if (status != SAI_STATUS_SUCCESS) {
+            return false;
+        }
+
+        auto b_attr_eq = AttrListEq(objecttype, act_attr, exp_attrlist);
+        if (!b_attr_eq) {
+            return false;
+        }
     }
 };
 
@@ -510,7 +593,7 @@ TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
                 { "gre_type", "0x6558" },
                 { "dscp", "8" },
                 { "ttl", "100" },
-                { "queue", "0" },
+                { "queue", "1" },
             } } });
     consumerExt->addToSync(mirror_cfg);
 
@@ -552,50 +635,12 @@ TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
     ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
     ASSERT_TRUE(attr.value.oid == p.m_port_id);
 
-    attr.id = SAI_MIRROR_SESSION_ATTR_TYPE;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.s32 == SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_ERSPAN_ENCAPSULATION_TYPE;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.s32 == SAI_ERSPAN_ENCAPSULATION_TYPE_MIRROR_L3_GRE_TUNNEL);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_IPHDR_VERSION;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u8 == 4);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_TOS;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == 32);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_TTL;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == 100);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_SRC_IP_ADDRESS;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    char addr[20];
-    sai_serialize_ip4(addr, attr.value.ipaddr.addr.ip4);
-    ASSERT_TRUE(std::string(addr) == "1.1.1.1");
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_DST_IP_ADDRESS;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    sai_serialize_ip4(addr, attr.value.ipaddr.addr.ip4);
-    ASSERT_TRUE(std::string(addr) == "2.2.2.2");
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_SRC_MAC_ADDRESS;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    char mac[6];
-    sai_serialize_mac(mac, attr.value.mac);
-    ASSERT_TRUE(std::string(mac) == gMacAddress.to_string());
-
     attr.id = SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS;
     ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    sai_serialize_mac(mac, attr.value.mac);
-    ASSERT_TRUE(std::string(mac) == "00:01:02:03:04:05");
+    ASSERT_TRUE(sai_serialize_mac(attr.value.mac) == "00:01:02:03:04:05");
 
-    attr.id = SAI_MIRROR_SESSION_ATTR_GRE_PROTOCOL_TYPE;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == 0x6558);
+    auto exp_attrlist = getMirrorAttributeList(kfvFieldsValues(mirror_cfg.front()));
+
+    ASSERT_TRUE(Validate(SAI_OBJECT_TYPE_MIRROR_SESSION, session_oid, *exp_attrlist.get()));
 }
 }
