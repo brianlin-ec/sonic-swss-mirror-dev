@@ -45,6 +45,7 @@ extern sai_mirror_api_t* sai_mirror_api;
 extern sai_hostif_api_t* sai_hostif_api;
 extern sai_neighbor_api_t* sai_neighbor_api;
 extern sai_next_hop_api_t *sai_next_hop_api;
+extern sai_fdb_api_t *sai_fdb_api;
 
 namespace nsMirrorOrchTest {
 
@@ -102,80 +103,7 @@ static int profile_get_next_value(
 }
 
 struct TestBase : public ::testing::Test {
-    //
-    // spy functions
-    //
-    static sai_status_t sai_get_vlan_attribute_(_In_ sai_object_id_t vlan_id,
-        _In_ uint32_t attr_count,
-        _Inout_ sai_attribute_t* attr_list)
-    {
-        return that->sai_get_vlan_attribute_fn(vlan_id, attr_count, attr_list);
-    }
 
-    static sai_status_t sai_remove_vlan_member_(_In_ sai_object_id_t vlan_member_id)
-    {
-        return that->sai_remove_vlan_member_fn(vlan_member_id);
-    }
-
-    static sai_status_t sai_get_bridge_attribute_(_In_ sai_object_id_t bridge_id,
-        _In_ uint32_t attr_count,
-        _Inout_ sai_attribute_t* attr_list)
-    {
-        return that->sai_get_bridge_attribute_fn(bridge_id, attr_count, attr_list);
-    }
-
-    static sai_status_t sai_get_bridge_port_attribute_(_In_ sai_object_id_t bridge_port_id,
-        _In_ uint32_t attr_count,
-        _Inout_ sai_attribute_t* attr_list)
-    {
-        return that->sai_get_bridge_port_attribute_fn(bridge_port_id, attr_count, attr_list);
-    }
-
-    static sai_status_t sai_remove_bridge_port_(_In_ sai_object_id_t bridge_port_id)
-    {
-        return that->sai_remove_bridge_port_fn(bridge_port_id);
-    }
-
-    static sai_status_t sai_create_hostif_(_Out_ sai_object_id_t* hostif_id,
-        _In_ sai_object_id_t switch_id,
-        _In_ uint32_t attr_count,
-        _In_ const sai_attribute_t* attr_list)
-    {
-        return that->sai_create_hostif_fn(hostif_id, switch_id, attr_count, attr_list);
-    }
-
-    static sai_status_t sai_set_hostif_attribute_(_In_ sai_object_id_t hostif_id,
-        _In_ const sai_attribute_t* attr)
-    {
-        return that->sai_set_hostif_attribute_fn(hostif_id, attr);
-    }
-
-    static TestBase* that;
-
-    std::function<sai_status_t(sai_object_id_t, uint32_t, sai_attribute_t*)>
-        sai_get_vlan_attribute_fn;
-
-    std::function<sai_status_t(sai_object_id_t)>
-        sai_remove_vlan_member_fn;
-
-    std::function<sai_status_t(sai_object_id_t, uint32_t, sai_attribute_t*)>
-        sai_get_bridge_attribute_fn;
-
-    std::function<sai_status_t(sai_object_id_t, uint32_t, sai_attribute_t*)>
-        sai_get_bridge_port_attribute_fn;
-
-    std::function<sai_status_t(sai_object_id_t)>
-        sai_remove_bridge_port_fn;
-
-    std::function<sai_status_t(sai_object_id_t*, sai_object_id_t, uint32_t, const sai_attribute_t*)>
-        sai_create_hostif_fn;
-
-    std::function<sai_status_t(sai_object_id_t, const sai_attribute_t*)>
-        sai_set_hostif_attribute_fn;
-
-    //
-    // validation functions (NO NEED TO put into Test class => move to Validation class)
-    //
     bool AttrListEq(sai_object_type_t objecttype, const std::vector<sai_attribute_t>& act_attr_list, /*const*/ SaiAttributeList& exp_attr_list)
     {
         if (act_attr_list.size() != exp_attr_list.get_attr_count()) {
@@ -194,9 +122,6 @@ struct TestBase : public ::testing::Test {
 
             auto act_len = sai_serialize_attribute_value(act_buf, meta, &act_attr_list[i].value);
             auto exp_len = sai_serialize_attribute_value(exp_buf, meta, &exp_attr_list.get_attr_list()[i].value);
-
-            // auto act = sai_serialize_attr_value(*meta, act_attr_list[i].value, false);
-            // auto exp = sai_serialize_attr_value(*meta, &exp_attr_list.get_attr_list()[i].value, false);
 
             assert(act_len < sizeof(act_buf));
             assert(exp_len < sizeof(exp_buf));
@@ -219,8 +144,6 @@ struct TestBase : public ::testing::Test {
         return true;
     }
 };
-
-TestBase* TestBase::that = nullptr;
 
 struct MirrorTest : public TestBase {
 
@@ -260,11 +183,15 @@ struct MirrorTest : public TestBase {
         // FIXME: using clone not just assign
         sai_switch_api = const_cast<sai_switch_api_t*>(&vs_switch_api);
         sai_port_api = const_cast<sai_port_api_t*>(&vs_port_api);
+        sai_vlan_api = const_cast<sai_vlan_api_t*>(&vs_vlan_api);
+        sai_bridge_api = const_cast<sai_bridge_api_t*>(&vs_bridge_api);
         sai_route_api = const_cast<sai_route_api_t*>(&vs_route_api);
         sai_router_intfs_api = const_cast<sai_router_interface_api_t*>(&vs_router_interface_api);
         sai_neighbor_api = const_cast<sai_neighbor_api_t*>(&vs_neighbor_api);
         sai_next_hop_api = const_cast<sai_next_hop_api_t*>(&vs_next_hop_api);
         sai_mirror_api = const_cast<sai_mirror_api_t*>(&vs_mirror_api);
+        sai_hostif_api = const_cast<sai_hostif_api_t*>(&vs_hostif_api);
+        sai_fdb_api = const_cast<sai_fdb_api_t*>(&vs_fdb_api);
 
         sai_attribute_t attr;
 
@@ -290,81 +217,6 @@ struct MirrorTest : public TestBase {
 
         gVirtualRouterId = attr.value.oid;
         ///////////////////////////////////////////////////////////////////////
-
-        assert(sai_vlan_api == nullptr);
-        assert(sai_bridge_api == nullptr);
-        assert(sai_hostif_api == nullptr);
-
-        auto sai_vlan = std::shared_ptr<sai_vlan_api_t>(new sai_vlan_api_t(), [](sai_vlan_api_t* p) {
-            delete p;
-            sai_vlan_api = nullptr;
-        });
-        auto sai_bridge = std::shared_ptr<sai_bridge_api_t>(new sai_bridge_api_t(), [](sai_bridge_api_t* p) {
-            delete p;
-            sai_bridge_api = nullptr;
-        });
-        auto sai_hostif = std::shared_ptr<sai_hostif_api_t>(new sai_hostif_api_t(), [](sai_hostif_api_t* p) {
-            delete p;
-            sai_hostif_api = nullptr;
-        });
-
-        sai_vlan_api = sai_vlan.get();
-        sai_bridge_api = sai_bridge.get();
-        sai_hostif_api = sai_hostif.get();
-
-        sai_vlan_api->get_vlan_attribute = sai_get_vlan_attribute_;
-        sai_vlan_api->remove_vlan_member = sai_remove_vlan_member_;
-        sai_bridge_api->get_bridge_attribute = sai_get_bridge_attribute_;
-        sai_bridge_api->get_bridge_port_attribute = sai_get_bridge_port_attribute_;
-        sai_bridge_api->remove_bridge_port = sai_remove_bridge_port_;
-        sai_hostif_api->create_hostif = sai_create_hostif_;
-        sai_hostif_api->set_hostif_attribute = sai_set_hostif_attribute_;
-        that = this;
-
-        sai_get_vlan_attribute_fn =
-            [](_In_ sai_object_id_t vlan_id,
-                _In_ uint32_t attr_count,
-                _Inout_ sai_attribute_t* attr_list) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_remove_vlan_member_fn =
-            [](_In_ sai_object_id_t vlan_member_id) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_get_bridge_attribute_fn =
-            [](_In_ sai_object_id_t bridge_id,
-                _In_ uint32_t attr_count,
-                _Inout_ sai_attribute_t* attr_list) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_get_bridge_port_attribute_fn =
-            [](_In_ sai_object_id_t bridge_port_id,
-                _In_ uint32_t attr_count,
-                _Inout_ sai_attribute_t* attr_list) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_remove_bridge_port_fn =
-            [](_In_ sai_object_id_t bridge_port_id) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_create_hostif_fn =
-            [](_Out_ sai_object_id_t* hostif_id,
-                _In_ sai_object_id_t switch_id,
-                _In_ uint32_t attr_count,
-                _In_ const sai_attribute_t* attr_list) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
-
-        sai_set_hostif_attribute_fn =
-            [](_In_ sai_object_id_t hostif_id,
-                _In_ const sai_attribute_t* attr) -> sai_status_t {
-            return SAI_STATUS_SUCCESS;
-        };
 
         const int portsorch_base_pri = 40;
 
@@ -448,11 +300,15 @@ struct MirrorTest : public TestBase {
 
         sai_switch_api = nullptr;
         sai_port_api = nullptr;
+        sai_vlan_api = nullptr;
+        sai_bridge_api = nullptr;
         sai_route_api = nullptr;
         sai_router_intfs_api = nullptr;
         sai_neighbor_api = nullptr;
         sai_next_hop_api = nullptr;
         sai_mirror_api = nullptr;
+        sai_hostif_api = nullptr;
+        sai_fdb_api = nullptr;
     }
 
     std::shared_ptr<SaiAttributeList> getMirrorAttributeList(const std::vector<swss::FieldValueTuple>& values)
@@ -533,7 +389,7 @@ struct MirrorTest : public TestBase {
     }
 };
 
-TEST_F(MirrorTest, Create_And_Delete_Mirror_Session)
+TEST_F(MirrorTest, Create_And_Delete_Session)
 {
     TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
     TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
@@ -559,15 +415,14 @@ TEST_F(MirrorTest, Create_And_Delete_Mirror_Session)
 
     bool session_state;
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_TRUE(session_state == false); //session inactive
-    //TODO: validate session fields
+    ASSERT_TRUE(session_state == false); // session inactive
+    // TODO: validate session fields
 
     auto del_cfg = std::deque<KeyOpFieldsValuesTuple>(
         { { mirror_session_name,
             DEL_COMMAND,
-            {
-                { "", "" },
-            } } });
+            { }
+        } });
     consumerExt->addToSync(del_cfg);
 
     static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
@@ -575,7 +430,7 @@ TEST_F(MirrorTest, Create_And_Delete_Mirror_Session)
     ASSERT_TRUE(false == mirror_orch.sessionExists(mirror_session_name)); // session not exist
 }
 
-TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
+TEST_F(MirrorTest, Activate_And_Deactivate_Session)
 {
     TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
     TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
@@ -601,22 +456,24 @@ TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
 
     bool session_state;
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_TRUE(session_state == false); //session inactive
-    //TODO: validate session fields
+    ASSERT_TRUE(session_state == false); // session inactive
+    // TODO: validate session fields
 
+    // add ip
     auto setData = std::deque<KeyOpFieldsValuesTuple>(
-          { { "Ethernet0:192.168.1.1/24",
-              SET_COMMAND,
-              { }
-          } });
+        { { "Ethernet0:192.168.1.1/24",
+            SET_COMMAND,
+            { }
+        } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
 
+    // add neighbor to activate session
     setData = std::deque<KeyOpFieldsValuesTuple>(
-          { { "Ethernet0:2.2.2.2",
-              SET_COMMAND,
-              {{"neigh", "00:01:02:03:04:05"}}
-          } });
+        { { "Ethernet0:2.2.2.2",
+            SET_COMMAND,
+            {{"neigh", "00:01:02:03:04:05"}}
+        } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
 
@@ -640,7 +497,155 @@ TEST_F(MirrorTest, Create_Mirror_Session_And_Activate)
     ASSERT_TRUE(sai_serialize_mac(attr.value.mac) == "00:01:02:03:04:05");
 
     auto exp_attrlist = getMirrorAttributeList(kfvFieldsValues(mirror_cfg.front()));
-
     ASSERT_TRUE(Validate(SAI_OBJECT_TYPE_MIRROR_SESSION, session_oid, *exp_attrlist.get()));
+
+    // remove neighbor to deactivate session
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Ethernet0:2.2.2.2",
+            DEL_COMMAND,
+            { }
+        } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == false); // session inactive
+
+}
+
+TEST_F(MirrorTest, MirrorToVlan)
+{
+    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
+    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
+    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+
+    auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
+    std::string mirror_session_name = "mirror_session_1";
+    auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
+        { { mirror_session_name,
+            SET_COMMAND,
+            {
+                { "src_ip", "1.1.1.1" },
+                { "dst_ip", "2.2.2.2" },
+                { "gre_type", "0x6558" },
+                { "dscp", "8" },
+                { "ttl", "100" },
+                { "queue", "1" },
+            } } });
+    consumerExt->addToSync(mirror_cfg);
+
+    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+
+    bool session_state;
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == false); // session inactive
+    // TODO: validate session fields
+
+    // create vlan
+    auto vlan_consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_app_db.get(), APP_VLAN_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_TABLE_NAME));
+    auto setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Vlan6",
+            SET_COMMAND,
+            { }
+        } });
+    vlan_consumerExt->addToSync(setData);
+    static_cast<Orch*>(gPortsOrch)->doTask(*vlan_consumerExt);
+
+    // add vlan member
+    auto vlanmem_consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_app_db.get(), APP_VLAN_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_MEMBER_TABLE_NAME));
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Vlan6:Ethernet0",
+            SET_COMMAND,
+            { }
+        } });
+    vlanmem_consumerExt->addToSync(setData);
+    static_cast<Orch*>(gPortsOrch)->doTask(*vlanmem_consumerExt);
+
+    // add ip
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Vlan6:192.168.1.1/24",
+            SET_COMMAND,
+            { }
+        } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
+
+    // add neighbor
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Vlan6:2.2.2.2",
+            SET_COMMAND,
+            {{"neigh", "00:01:02:03:04:05"}}
+        } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+
+    // add fdb to activate session
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Vlan6:00:01:02:03:04:05",
+            SET_COMMAND,
+            {
+                {"port", "Ethernet0"},
+                {"type", "dynamic"}
+            } } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gFdbOrch)->doTask(*consumerExt);
+
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == true); // session active
+
+    sai_object_id_t session_oid;
+    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+
+    sai_object_id_t port_oid;
+    Port p;
+    ASSERT_TRUE(gPortsOrch->getPort("Ethernet0", p));
+
+    sai_attribute_t attr;
+    attr.id = SAI_MIRROR_SESSION_ATTR_MONITOR_PORT;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.oid == p.m_port_id);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(sai_serialize_mac(attr.value.mac) == "00:01:02:03:04:05");
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_HEADER_VALID;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.booldata == true);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_TPID;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == ETH_P_8021Q);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_ID;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == 6);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_PRI;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == 0);
+
+    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_CFI;
+    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
+    ASSERT_TRUE(attr.value.u16 == 0);
+
+    auto exp_attrlist = getMirrorAttributeList(kfvFieldsValues(mirror_cfg.front()));
+    ASSERT_TRUE(Validate(SAI_OBJECT_TYPE_MIRROR_SESSION, session_oid, *exp_attrlist.get()));
+
+    // remove fdb to deactivate session
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { "Vlan6:00:01:02:03:04:05",
+            DEL_COMMAND,
+            { }
+        } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gFdbOrch)->doTask(*consumerExt);
+
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == false); // session inactive
+
 }
 }
