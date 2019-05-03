@@ -1,12 +1,15 @@
 #include "gtest/gtest.h"
 
 #include "consumerstatetable.h"
+#include "converter.h"
 #include "hiredis.h"
-#include "orchdaemon.h"
 #include "sai_vs.h"
 #include "saiattributelist.h"
 #include "saihelper.h"
-#include "converter.h"
+
+#define private public
+#include "orchdaemon.h"
+#undef private
 
 void syncd_apply_view() {}
 
@@ -44,21 +47,21 @@ extern sai_router_interface_api_t* sai_router_intfs_api;
 extern sai_mirror_api_t* sai_mirror_api;
 extern sai_hostif_api_t* sai_hostif_api;
 extern sai_neighbor_api_t* sai_neighbor_api;
-extern sai_next_hop_api_t *sai_next_hop_api;
-extern sai_fdb_api_t *sai_fdb_api;
+extern sai_next_hop_api_t* sai_next_hop_api;
+extern sai_fdb_api_t* sai_fdb_api;
 
 namespace nsMirrorOrchTest {
 
 using namespace std;
 
-class ConsumerExtend : public Consumer
-{
-  public:
-    ConsumerExtend(ConsumerTableBase *select, Orch *orch, const string &name) : Consumer(select, orch, name)
+class ConsumerExtend : public Consumer {
+public:
+    ConsumerExtend(ConsumerTableBase* select, Orch* orch, const string& name)
+        : Consumer(select, orch, name)
     {
     }
 
-    size_t addToSync(std::deque<KeyOpFieldsValuesTuple> &entries)
+    size_t addToSync(std::deque<KeyOpFieldsValuesTuple>& entries)
     {
         Consumer::addToSync(entries);
         return 0;
@@ -153,9 +156,9 @@ struct MirrorTest : public TestBase {
 
     MirrorTest()
     {
-        m_app_db = std::make_shared<swss::DBConnector>(APPL_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
-        m_config_db = std::make_shared<swss::DBConnector>(CONFIG_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
-        m_state_db = std::make_shared<swss::DBConnector>(STATE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
+        m_app_db = make_shared<swss::DBConnector>(APPL_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
+        m_config_db = make_shared<swss::DBConnector>(CONFIG_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
+        m_state_db = make_shared<swss::DBConnector>(STATE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
     }
     ~MirrorTest()
     {
@@ -200,7 +203,7 @@ struct MirrorTest : public TestBase {
 
         status = sai_switch_api->create_switch(&gSwitchId, 1, &attr);
         ASSERT_TRUE(status == SAI_STATUS_SUCCESS);
-        
+
         // Get switch source MAC address
         attr.id = SAI_SWITCH_ATTR_SRC_MAC_ADDRESS;
         status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
@@ -311,40 +314,36 @@ struct MirrorTest : public TestBase {
         sai_fdb_api = nullptr;
     }
 
-    std::shared_ptr<SaiAttributeList> getMirrorAttributeList(const std::vector<swss::FieldValueTuple>& values)
+    std::shared_ptr<SaiAttributeList> getMirrorAttributeList(sai_object_type_t objecttype, const MirrorEntry& entry)
     {
         std::vector<swss::FieldValueTuple> fields;
+
+        auto port_id = sai_serialize_object_id(entry.neighborInfo.portId);
 
         fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TYPE", "SAI_MIRROR_SESSION_TYPE_ENHANCED_REMOTE" });
         fields.push_back({ "SAI_MIRROR_SESSION_ATTR_ERSPAN_ENCAPSULATION_TYPE", "SAI_ERSPAN_ENCAPSULATION_TYPE_MIRROR_L3_GRE_TUNNEL" });
         fields.push_back({ "SAI_MIRROR_SESSION_ATTR_IPHDR_VERSION", "4" });
         fields.push_back({ "SAI_MIRROR_SESSION_ATTR_SRC_MAC_ADDRESS", gMacAddress.to_string() });
 
-        for (auto it : values) {
-            if (fvField(it) == "src_ip")
-                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_SRC_IP_ADDRESS", fvValue(it) });
-            else if (fvField(it) == "dst_ip")
-                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_DST_IP_ADDRESS", fvValue(it) });
-            else if (fvField(it) == "gre_type")
-            {
-                uint16_t greType = to_uint<uint16_t>(fvValue(it));
-                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_GRE_PROTOCOL_TYPE", to_string(greType) });
-            }
-            else if (fvField(it) == "dscp")
-            {
-                uint16_t tos = to_uint<uint8_t>(fvValue(it)) << 2;
-                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TOS", to_string(tos) });
-            }
-            else if (fvField(it) == "ttl")
-                fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TTL", fvValue(it) });
-            else if (fvField(it) == "queue")
-            {
-                if ((uint8_t)stoi(fvValue(it)) != 0)
-                    fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TC", fvValue(it) });
-            }
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_MONITOR_PORT", port_id });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS", entry.neighborInfo.mac.to_string() });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_SRC_IP_ADDRESS", entry.srcIp.to_string() });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_DST_IP_ADDRESS", entry.dstIp.to_string() });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_GRE_PROTOCOL_TYPE", to_string(entry.greType) });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TOS", to_string((uint16_t)(entry.dscp << 2)) });
+        fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TTL", to_string(entry.ttl) });
+        if (entry.queue != 0) {
+            fields.push_back({ "SAI_MIRROR_SESSION_ATTR_TC", to_string(entry.queue) });
+        }
+        if (entry.neighborInfo.port.m_type == Port::VLAN) {
+            fields.push_back({ "SAI_MIRROR_SESSION_ATTR_VLAN_HEADER_VALID", "true" });
+            fields.push_back({ "SAI_MIRROR_SESSION_ATTR_VLAN_TPID", "33024" }); // 0x8100
+            fields.push_back({ "SAI_MIRROR_SESSION_ATTR_VLAN_ID", to_string(entry.neighborInfo.port.m_vlan_info.vlan_id) });
+            fields.push_back({ "SAI_MIRROR_SESSION_ATTR_VLAN_PRI", "0" });
+            fields.push_back({ "SAI_MIRROR_SESSION_ATTR_VLAN_CFI", "0" });
         }
 
-        return std::shared_ptr<SaiAttributeList>(new SaiAttributeList(SAI_OBJECT_TYPE_MIRROR_SESSION, fields, false));
+        return std::shared_ptr<SaiAttributeList>(new SaiAttributeList(objecttype, fields, false));
     }
 
     bool Validate(sai_object_type_t objecttype, sai_object_id_t object_id, SaiAttributeList& exp_attrlist)
@@ -362,18 +361,6 @@ struct MirrorTest : public TestBase {
             sai_attribute_t new_attr = { 0 };
             new_attr.id = attr.id;
 
-            // switch (meta->attrvaluetype) {
-            // case SAI_ATTR_VALUE_TYPE_INT32_LIST:
-            //     new_attr.value.s32list.list = (int32_t*)malloc(sizeof(int32_t) * attr.value.s32list.count);
-            //     new_attr.value.s32list.count = attr.value.s32list.count;
-            //     m_s32list_pool.emplace_back(new_attr.value.s32list.list);
-            //     break;
-
-            // default:
-            //     std::cout << "";
-            //     ;
-            // }
-
             act_attr.emplace_back(new_attr);
         }
 
@@ -386,6 +373,39 @@ struct MirrorTest : public TestBase {
         if (!b_attr_eq) {
             return false;
         }
+    }
+
+    bool ValidateMirrorEntryByConfOp(const MirrorEntry& entry, const std::vector<swss::FieldValueTuple>& values)
+    {
+        for (auto it : values) {
+            if (fvField(it) == "src_ip") {
+                if (entry.srcIp.to_string() != fvValue(it)) {
+                    return false;
+                }
+            } else if (fvField(it) == "dst_ip") {
+                if (entry.dstIp.to_string() != fvValue(it)) {
+                    return false;
+                }
+            } else if (fvField(it) == "gre_type") {
+                if (entry.greType != to_uint<uint16_t>(fvValue(it))) {
+                    return false;
+                }
+            } else if (fvField(it) == "dscp") {
+                if (entry.dscp != to_uint<uint8_t>(fvValue(it))) {
+                    return false;
+                }
+            } else if (fvField(it) == "ttl") {
+                if (entry.ttl != to_uint<uint8_t>(fvValue(it))) {
+                    return false;
+                }
+            } else if (fvField(it) == "queue") {
+                if (entry.queue != to_uint<uint8_t>(fvValue(it))) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 };
 
@@ -416,13 +436,14 @@ TEST_F(MirrorTest, Create_And_Delete_Session)
     bool session_state;
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == false); // session inactive
-    // TODO: validate session fields
+
+    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
+    ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
 
     auto del_cfg = std::deque<KeyOpFieldsValuesTuple>(
         { { mirror_session_name,
             DEL_COMMAND,
-            { }
-        } });
+            {} } });
     consumerExt->addToSync(del_cfg);
 
     static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
@@ -439,12 +460,13 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session)
     auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
         new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
     std::string mirror_session_name = "mirror_session_1";
+    std::string dst_ip = "2.2.2.2";
     auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
         { { mirror_session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
-                { "dst_ip", "2.2.2.2" },
+                { "dst_ip", dst_ip },
                 { "gre_type", "0x6558" },
                 { "dscp", "8" },
                 { "ttl", "100" },
@@ -457,60 +479,55 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session)
     bool session_state;
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == false); // session inactive
-    // TODO: validate session fields
+
+    std::string exp_port = "Ethernet0";
+    std::string exp_mac = "00:01:02:03:04:05";
 
     // add ip
+    std::string intfs_key = exp_port + ":192.168.1.1/24";
     auto setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Ethernet0:192.168.1.1/24",
+        { { intfs_key,
             SET_COMMAND,
-            { }
-        } });
+            {} } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
 
     // add neighbor to activate session
+    std::string neigh_key = exp_port + ":" + dst_ip;
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Ethernet0:2.2.2.2",
+        { { neigh_key,
             SET_COMMAND,
-            {{"neigh", "00:01:02:03:04:05"}}
-        } });
+            { { "neigh", exp_mac } } } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
 
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_TRUE(session_state == true); //session active
+    ASSERT_TRUE(session_state == true); // session active
+
+    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
+    Port p;
+    ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
+    ASSERT_TRUE(mirror_entry.neighborInfo.portId == p.m_port_id);
+    ASSERT_TRUE(mirror_entry.neighborInfo.mac.to_string() == exp_mac);
+    ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
 
     sai_object_id_t session_oid;
     ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
 
-    sai_object_id_t port_oid;
-    Port p;
-    ASSERT_TRUE(gPortsOrch->getPort("Ethernet0", p));
-
-    sai_attribute_t attr;
-    attr.id = SAI_MIRROR_SESSION_ATTR_MONITOR_PORT;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.oid == p.m_port_id);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(sai_serialize_mac(attr.value.mac) == "00:01:02:03:04:05");
-
-    auto exp_attrlist = getMirrorAttributeList(kfvFieldsValues(mirror_cfg.front()));
-    ASSERT_TRUE(Validate(SAI_OBJECT_TYPE_MIRROR_SESSION, session_oid, *exp_attrlist.get()));
+    const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
+    auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
+    ASSERT_TRUE(Validate(objecttype, session_oid, *exp_attrlist.get()));
 
     // remove neighbor to deactivate session
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Ethernet0:2.2.2.2",
+        { { neigh_key,
             DEL_COMMAND,
-            { }
-        } });
+            {} } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
 
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == false); // session inactive
-
 }
 
 TEST_F(MirrorTest, MirrorToVlan)
@@ -522,12 +539,13 @@ TEST_F(MirrorTest, MirrorToVlan)
     auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
         new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
     std::string mirror_session_name = "mirror_session_1";
+    std::string dst_ip = "2.2.2.2";
     auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
         { { mirror_session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
-                { "dst_ip", "2.2.2.2" },
+                { "dst_ip", dst_ip },
                 { "gre_type", "0x6558" },
                 { "dscp", "8" },
                 { "ttl", "100" },
@@ -540,112 +558,87 @@ TEST_F(MirrorTest, MirrorToVlan)
     bool session_state;
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == false); // session inactive
-    // TODO: validate session fields
+
+    std::string exp_port = "Ethernet0";
+    std::string exp_mac = "00:01:02:03:04:05";
+    int exp_vlan = 6;
 
     // create vlan
+    std::string vlan_key = "Vlan" + to_string(exp_vlan);
     auto vlan_consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
         new ConsumerStateTable(m_app_db.get(), APP_VLAN_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_TABLE_NAME));
     auto setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan6",
+        { { vlan_key,
             SET_COMMAND,
-            { }
-        } });
+            {} } });
     vlan_consumerExt->addToSync(setData);
     static_cast<Orch*>(gPortsOrch)->doTask(*vlan_consumerExt);
 
     // add vlan member
+    std::string vlanmem_key = vlan_key + ":" + exp_port;
     auto vlanmem_consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
         new ConsumerStateTable(m_app_db.get(), APP_VLAN_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_MEMBER_TABLE_NAME));
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan6:Ethernet0",
+        { { vlanmem_key,
             SET_COMMAND,
-            { }
-        } });
+            {} } });
     vlanmem_consumerExt->addToSync(setData);
     static_cast<Orch*>(gPortsOrch)->doTask(*vlanmem_consumerExt);
 
     // add ip
+    std::string intfs_key = vlan_key + ":192.168.1.1/24";
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan6:192.168.1.1/24",
+        { { intfs_key,
             SET_COMMAND,
-            { }
-        } });
+            {} } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
 
     // add neighbor
+    std::string neigh_key = vlan_key + ":" + dst_ip;
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan6:2.2.2.2",
+        { { neigh_key,
             SET_COMMAND,
-            {{"neigh", "00:01:02:03:04:05"}}
-        } });
+            { { "neigh", exp_mac } } } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
 
     // add fdb to activate session
+    std::string fdb_key = vlan_key + ":" + exp_mac;
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan6:00:01:02:03:04:05",
+        { { fdb_key,
             SET_COMMAND,
-            {
-                {"port", "Ethernet0"},
-                {"type", "dynamic"}
-            } } });
+            { { "port", exp_port },
+                { "type", "dynamic" } } } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gFdbOrch)->doTask(*consumerExt);
 
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == true); // session active
 
+    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
+    Port p;
+    ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
+    ASSERT_TRUE(mirror_entry.neighborInfo.portId == p.m_port_id);
+    ASSERT_TRUE(mirror_entry.neighborInfo.mac.to_string() == exp_mac);
+    ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
+
     sai_object_id_t session_oid;
     ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
 
-    sai_object_id_t port_oid;
-    Port p;
-    ASSERT_TRUE(gPortsOrch->getPort("Ethernet0", p));
-
-    sai_attribute_t attr;
-    attr.id = SAI_MIRROR_SESSION_ATTR_MONITOR_PORT;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.oid == p.m_port_id);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_DST_MAC_ADDRESS;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(sai_serialize_mac(attr.value.mac) == "00:01:02:03:04:05");
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_HEADER_VALID;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.booldata == true);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_TPID;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == ETH_P_8021Q);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_ID;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == 6);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_PRI;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == 0);
-
-    attr.id = SAI_MIRROR_SESSION_ATTR_VLAN_CFI;
-    ASSERT_TRUE(sai_mirror_api->get_mirror_session_attribute(session_oid, 1, &attr) == SAI_STATUS_SUCCESS);
-    ASSERT_TRUE(attr.value.u16 == 0);
-
-    auto exp_attrlist = getMirrorAttributeList(kfvFieldsValues(mirror_cfg.front()));
-    ASSERT_TRUE(Validate(SAI_OBJECT_TYPE_MIRROR_SESSION, session_oid, *exp_attrlist.get()));
+    const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
+    auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
+    ASSERT_TRUE(Validate(objecttype, session_oid, *exp_attrlist.get()));
 
     // remove fdb to deactivate session
     setData = std::deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan6:00:01:02:03:04:05",
+        { { fdb_key,
             DEL_COMMAND,
-            { }
-        } });
+            {} } });
     consumerExt->addToSync(setData);
     static_cast<Orch*>(gFdbOrch)->doTask(*consumerExt);
 
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == false); // session inactive
-
 }
 }
