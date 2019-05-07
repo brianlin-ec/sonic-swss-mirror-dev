@@ -49,6 +49,7 @@ extern sai_hostif_api_t* sai_hostif_api;
 extern sai_neighbor_api_t* sai_neighbor_api;
 extern sai_next_hop_api_t* sai_next_hop_api;
 extern sai_fdb_api_t* sai_fdb_api;
+extern sai_lag_api_t* sai_lag_api;
 
 namespace nsMirrorOrchTest {
 
@@ -195,6 +196,7 @@ struct MirrorTest : public TestBase {
         sai_mirror_api = const_cast<sai_mirror_api_t*>(&vs_mirror_api);
         sai_hostif_api = const_cast<sai_hostif_api_t*>(&vs_hostif_api);
         sai_fdb_api = const_cast<sai_fdb_api_t*>(&vs_fdb_api);
+        sai_lag_api = const_cast<sai_lag_api_t*>(&vs_lag_api);
 
         sai_attribute_t attr;
 
@@ -257,16 +259,13 @@ struct MirrorTest : public TestBase {
         auto setData = std::deque<KeyOpFieldsValuesTuple>(
             { { "Ethernet0",
                   SET_COMMAND,
-                  {
-                      { "lanes", "29,30,31,32" },
-                      { "alias", "Ethernet0" },
-                      { "oper_status", "up" },
-                      { "mtu", "9100" },
-                      { "admin_status", "up" },
-                  } },
+                  { { "lanes", "29,30,31,32" } } },
+                { "Ethernet4",
+                    SET_COMMAND,
+                    { { "lanes", "25,26,27,28" } } },
                 { "PortConfigDone",
                     SET_COMMAND,
-                    { { "count", "1" } } },
+                    { { "count", "2" } } },
                 { "PortInitDone",
                     EMPTY_PREFIX,
                     { { "", "" } } } });
@@ -312,6 +311,7 @@ struct MirrorTest : public TestBase {
         sai_mirror_api = nullptr;
         sai_hostif_api = nullptr;
         sai_fdb_api = nullptr;
+        sai_lag_api = nullptr;
     }
 
     std::shared_ptr<SaiAttributeList> getMirrorAttributeList(sai_object_type_t objecttype, const MirrorEntry& entry)
@@ -641,4 +641,109 @@ TEST_F(MirrorTest, MirrorToVlan)
     ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
     ASSERT_TRUE(session_state == false); // session inactive
 }
+
+TEST_F(MirrorTest, MirrorToLAG)
+{
+    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
+    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
+    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+
+    auto consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
+    std::string mirror_session_name = "mirror_session_1";
+    std::string dst_ip = "2.2.2.2";
+    auto mirror_cfg = std::deque<KeyOpFieldsValuesTuple>(
+        { { mirror_session_name,
+            SET_COMMAND,
+            {
+                { "src_ip", "1.1.1.1" },
+                { "dst_ip", dst_ip },
+                { "gre_type", "0x6558" },
+                { "dscp", "8" },
+                { "ttl", "100" },
+                { "queue", "1" },
+            } } });
+    consumerExt->addToSync(mirror_cfg);
+
+    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+
+    bool session_state;
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == false); // session inactive
+
+    std::string exp_port = "Ethernet0";
+    std::string exp_mac = "00:01:02:03:04:05";
+    std::string exp_lag = "PortChannel0";
+
+    // create port channel
+    auto lag_consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_app_db.get(), APP_LAG_TABLE_NAME, 1, 1), gPortsOrch, APP_LAG_TABLE_NAME));
+    auto setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { exp_lag,
+            SET_COMMAND,
+            {
+                { "admin", "up" },
+                { "mtu", "9100" },
+            } } });
+    lag_consumerExt->addToSync(setData);
+    static_cast<Orch*>(gPortsOrch)->doTask(*lag_consumerExt);
+
+    // create port channel member
+    std::string lagmem_key = exp_lag + ":" + exp_port;
+    auto lagmem_consumerExt = std::unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        new ConsumerStateTable(m_app_db.get(), APP_LAG_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_LAG_MEMBER_TABLE_NAME));
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { lagmem_key,
+            SET_COMMAND,
+            { { "status", "enabled" } } } });
+    lagmem_consumerExt->addToSync(setData);
+    static_cast<Orch*>(gPortsOrch)->doTask(*lagmem_consumerExt);
+
+    // add ip
+    std::string intfs_key = exp_lag + ":192.168.1.1/24";
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { intfs_key,
+            SET_COMMAND,
+            {} } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
+
+    // add neighbor to activate session
+    std::string neigh_key = exp_lag + ":" + dst_ip;
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { neigh_key,
+            SET_COMMAND,
+            { { "neigh", exp_mac } } } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == true); // session active
+
+    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
+    Port p;
+    ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
+    ASSERT_TRUE(mirror_entry.neighborInfo.portId == p.m_port_id);
+    ASSERT_TRUE(mirror_entry.neighborInfo.mac.to_string() == exp_mac);
+    ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
+
+    sai_object_id_t session_oid;
+    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+
+    const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
+    auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
+    ASSERT_TRUE(Validate(objecttype, session_oid, *exp_attrlist.get()));
+
+    // remove neighbor to deactivate session
+    setData = std::deque<KeyOpFieldsValuesTuple>(
+        { { neigh_key,
+            DEL_COMMAND,
+            {} } });
+    consumerExt->addToSync(setData);
+    static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+
+    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
+    ASSERT_TRUE(session_state == false); // session inactive
+}
+
 }
