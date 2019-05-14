@@ -1,15 +1,16 @@
 #include "gtest/gtest.h"
 
+#define private public
+#include "mirrororch.h"
+#undef private
+
 #include "consumerstatetable.h"
 #include "converter.h"
 #include "hiredis.h"
+#include "orchdaemon.h"
 #include "sai_vs.h"
 #include "saiattributelist.h"
 #include "saihelper.h"
-
-#define private public
-#include "orchdaemon.h"
-#undef private
 
 void syncd_apply_view() {}
 
@@ -55,55 +56,46 @@ namespace nsMirrorOrchTest {
 
 using namespace std;
 
-class ConsumerExtend : public Consumer {
-public:
-    ConsumerExtend(ConsumerTableBase* select, Orch* orch, const string& name)
-        : Consumer(select, orch, name)
-    {
-    }
-
-    size_t addToSync(deque<KeyOpFieldsValuesTuple>& entries)
-    {
-        Consumer::addToSync(entries);
-        return 0;
-    }
-};
-
-const char* profile_get_value(
-    _In_ sai_switch_profile_id_t profile_id,
-    _In_ const char* variable)
+size_t consumerAddToSync(Consumer* consumer, const deque<KeyOpFieldsValuesTuple>& entries)
 {
-    // UNREFERENCED_PARAMETER(profile_id);
-
-    if (!strcmp(variable, "SAI_KEY_INIT_CONFIG_FILE")) {
-        return "/usr/share/sai_2410.xml"; // FIXME: create a json file, and passing the path into test
-    } else if (!strcmp(variable, "KV_DEVICE_MAC_ADDRESS")) {
-        return "20:03:04:05:06:00";
-    } else if (!strcmp(variable, "SAI_KEY_L3_ROUTE_TABLE_SIZE")) {
-        return "1000";
-    } else if (!strcmp(variable, "SAI_KEY_L3_NEIGHBOR_TABLE_SIZE")) {
-        return "2000";
-    } else if (!strcmp(variable, "SAI_VS_SWITCH_TYPE")) {
-        return "SAI_VS_SWITCH_TYPE_BCM56850";
-    }
-
-    return NULL;
-}
-
-static int profile_get_next_value(
-    _In_ sai_switch_profile_id_t profile_id,
-    _Out_ const char** variable,
-    _Out_ const char** value)
-{
-    if (value == NULL) {
+    /* Nothing popped */
+    if (entries.empty()) {
         return 0;
     }
 
-    if (variable == NULL) {
-        return -1;
-    }
+    for (auto& entry : entries) {
+        string key = kfvKey(entry);
+        string op = kfvOp(entry);
 
-    return -1;
+        /* If a new task comes or if a DEL task comes, we directly put it into getConsumerTable().m_toSync map */
+        if (consumer->m_toSync.find(key) == consumer->m_toSync.end() || op == DEL_COMMAND) {
+            consumer->m_toSync[key] = entry;
+        }
+        /* If an old task is still there, we combine the old task with new task */
+        else {
+            KeyOpFieldsValuesTuple existing_data = consumer->m_toSync[key];
+
+            auto new_values = kfvFieldsValues(entry);
+            auto existing_values = kfvFieldsValues(existing_data);
+
+            for (auto it : new_values) {
+                string field = fvField(it);
+                string value = fvValue(it);
+
+                auto iu = existing_values.begin();
+                while (iu != existing_values.end()) {
+                    string ofield = fvField(*iu);
+                    if (field == ofield)
+                        iu = existing_values.erase(iu);
+                    else
+                        iu++;
+                }
+                existing_values.push_back(FieldValueTuple(field, value));
+            }
+            consumer->m_toSync[key] = KeyOpFieldsValuesTuple(key, op, existing_values);
+        }
+    }
+    return entries.size();
 }
 
 struct TestBase : public ::testing::Test {
@@ -149,42 +141,121 @@ struct TestBase : public ::testing::Test {
     }
 };
 
-struct MirrorTest : public TestBase {
+struct MockMirrorOrch {
+    MirrorOrch* m_mirrorOrch;
+    swss::DBConnector* config_db;
+
+    MockMirrorOrch(swss::DBConnector* config_db, swss::DBConnector* state_db,
+        PortsOrch* portOrch, RouteOrch* routeOrch, NeighOrch* neighOrch, FdbOrch* fdbOrch)
+        : config_db(config_db)
+    {
+        TableConnector stateDbMirrorSession(state_db, APP_MIRROR_SESSION_TABLE_NAME);
+        TableConnector confDbMirrorSession(config_db, CFG_MIRROR_SESSION_TABLE_NAME);
+
+        m_mirrorOrch = new MirrorOrch(stateDbMirrorSession, confDbMirrorSession, portOrch, routeOrch, neighOrch, fdbOrch);
+    }
+
+    ~MockMirrorOrch()
+    {
+        delete m_mirrorOrch;
+    }
+
+    operator const MirrorOrch*() const
+    {
+        return m_mirrorOrch;
+    }
+
+    const MirrorTable& getMirrorTable()
+    {
+        return m_mirrorOrch->m_syncdMirrors;
+    }
+
+    void doMirrorTask(const deque<KeyOpFieldsValuesTuple>& entries)
+    {
+        auto consumer = unique_ptr<Consumer>(new Consumer(
+            new swss::ConsumerStateTable(config_db, CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), m_mirrorOrch, CFG_MIRROR_SESSION_TABLE_NAME));
+
+        consumerAddToSync(consumer.get(), entries);
+
+        static_cast<Orch*>(m_mirrorOrch)->doTask(*consumer);
+    }
+
+    bool getSessionOid(const string& name, sai_object_id_t& oid)
+    {
+        return m_mirrorOrch->getSessionOid(name, oid);
+    }
+};
+
+struct MirrorOrchTest : public TestBase {
 
     shared_ptr<swss::DBConnector> m_app_db;
     shared_ptr<swss::DBConnector> m_config_db;
     shared_ptr<swss::DBConnector> m_state_db;
 
-    MirrorTest()
+    MirrorOrchTest()
     {
         m_app_db = make_shared<swss::DBConnector>(APPL_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
         m_config_db = make_shared<swss::DBConnector>(CONFIG_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
         m_state_db = make_shared<swss::DBConnector>(STATE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
     }
-    ~MirrorTest()
+    ~MirrorOrchTest()
     {
     }
+
+    static map<string, string> gProfileMap;
+    static map<string, string>::iterator gProfileIter;
+
+    static const char* profile_get_value(
+        sai_switch_profile_id_t profile_id,
+        const char* variable)
+    {
+        map<string, string>::const_iterator it = gProfileMap.find(variable);
+        if (it == gProfileMap.end()) {
+            return NULL;
+        }
+
+        return it->second.c_str();
+    }
+
+    static int profile_get_next_value(
+        sai_switch_profile_id_t profile_id,
+        const char** variable,
+        const char** value)
+    {
+        if (value == NULL) {
+            gProfileIter = gProfileMap.begin();
+            return 0;
+        }
+
+        if (variable == NULL) {
+            return -1;
+        }
+
+        if (gProfileIter == gProfileMap.end()) {
+            return -1;
+        }
+
+        *variable = gProfileIter->first.c_str();
+        *value = gProfileIter->second.c_str();
+
+        gProfileIter++;
+
+        return 0;
+    }
+
     void SetUp() override
     {
-        assert(gFdbOrch == nullptr);
-        assert(gRouteOrch == nullptr);
-        assert(gNeighOrch == nullptr);
-        assert(gIntfsOrch == nullptr);
-        assert(gVrfOrch == nullptr);
-        assert(gCrmOrch == nullptr);
-        assert(gPortsOrch == nullptr);
-        assert(gBufferOrch == nullptr);
+        gProfileMap.emplace("SAI_VS_SWITCH_TYPE", "SAI_VS_SWITCH_TYPE_BCM56850");
+        gProfileMap.emplace("KV_DEVICE_MAC_ADDRESS", "20:03:04:05:06:00");
 
-        ///////////////////////////////////////////////////////////////////////
         sai_service_method_table_t test_services = {
-            profile_get_value,
-            profile_get_next_value
+            MirrorOrchTest::profile_get_value,
+            MirrorOrchTest::profile_get_next_value
         };
 
         auto status = sai_api_initialize(0, (sai_service_method_table_t*)&test_services);
         ASSERT_EQ(status, SAI_STATUS_SUCCESS);
 
-        // FIXME: using clone not just assign
         sai_switch_api = const_cast<sai_switch_api_t*>(&vs_switch_api);
         sai_port_api = const_cast<sai_port_api_t*>(&vs_port_api);
         sai_vlan_api = const_cast<sai_vlan_api_t*>(&vs_vlan_api);
@@ -216,7 +287,6 @@ struct MirrorTest : public TestBase {
         status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
         ASSERT_EQ(status, SAI_STATUS_SUCCESS);
         gVirtualRouterId = attr.value.oid;
-        ///////////////////////////////////////////////////////////////////////
 
         const int portsorch_base_pri = 40;
 
@@ -227,16 +297,29 @@ struct MirrorTest : public TestBase {
             { APP_LAG_TABLE_NAME, portsorch_base_pri + 4 },
             { APP_LAG_MEMBER_TABLE_NAME, portsorch_base_pri }
         };
+
+        ASSERT_EQ(gPortsOrch, nullptr);
         gPortsOrch = new PortsOrch(m_app_db.get(), ports_tables);
 
+        ASSERT_EQ(gCrmOrch, nullptr);
         gCrmOrch = new CrmOrch(m_config_db.get(), CFG_CRM_TABLE_NAME);
+
+        ASSERT_EQ(gVrfOrch, nullptr);
         gVrfOrch = new VRFOrch(m_app_db.get(), APP_VRF_TABLE_NAME);
+
+        ASSERT_EQ(gIntfsOrch, nullptr);
         gIntfsOrch = new IntfsOrch(m_app_db.get(), APP_INTF_TABLE_NAME, gVrfOrch);
+
+        ASSERT_EQ(gNeighOrch, nullptr);
         gNeighOrch = new NeighOrch(m_app_db.get(), APP_NEIGH_TABLE_NAME, gIntfsOrch);
+
+        ASSERT_EQ(gRouteOrch, nullptr);
         gRouteOrch = new RouteOrch(m_app_db.get(), APP_ROUTE_TABLE_NAME, gNeighOrch);
 
         TableConnector applDbFdb(m_app_db.get(), APP_FDB_TABLE_NAME);
         TableConnector stateDbFdb(m_state_db.get(), STATE_FDB_TABLE_NAME);
+
+        ASSERT_EQ(gFdbOrch, nullptr);
         gFdbOrch = new FdbOrch(applDbFdb, stateDbFdb, gPortsOrch);
 
         vector<string> buffer_tables = {
@@ -247,9 +330,11 @@ struct MirrorTest : public TestBase {
             CFG_BUFFER_PORT_INGRESS_PROFILE_LIST_NAME,
             CFG_BUFFER_PORT_EGRESS_PROFILE_LIST_NAME
         };
+
+        ASSERT_EQ(gBufferOrch, nullptr);
         gBufferOrch = new BufferOrch(m_config_db.get(), buffer_tables);
 
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
 
         /* Get port number */
@@ -289,30 +374,28 @@ struct MirrorTest : public TestBase {
         port_init_tuple.push_back({ "PortConfigDone", SET_COMMAND, { { "count", to_string(port_count) } } });
         port_init_tuple.push_back({ "PortInitDone", EMPTY_PREFIX, { { "", "" } } });
 
-        consumerExt->addToSync(port_init_tuple);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), port_init_tuple);
+        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
     }
 
     void TearDown() override
     {
-        delete gFdbOrch; // FIXME: using auto ptr
+        delete gFdbOrch;
         gFdbOrch = nullptr;
-        delete gRouteOrch; // FIXME: using auto ptr
+        delete gRouteOrch;
         gRouteOrch = nullptr;
-        delete gNeighOrch; // FIXME: using auto ptr
+        delete gNeighOrch;
         gNeighOrch = nullptr;
-        delete gIntfsOrch; // FIXME: using auto ptr
+        delete gIntfsOrch;
         gIntfsOrch = nullptr;
-        delete gVrfOrch; // FIXME: using auto ptr
+        delete gVrfOrch;
         gVrfOrch = nullptr;
-        delete gPortsOrch; // FIXME: using auto ptr
+        delete gPortsOrch;
         gPortsOrch = nullptr;
-        delete gCrmOrch; // FIXME: using auto ptr
+        delete gCrmOrch;
         gCrmOrch = nullptr;
-        delete gBufferOrch; // FIXME: using auto ptr
+        delete gBufferOrch;
         gBufferOrch = nullptr;
-
-        ///////////////////////////////////////////////////////////////////////
 
         auto status = sai_switch_api->remove_switch(gSwitchId);
         ASSERT_EQ(status, SAI_STATUS_SUCCESS);
@@ -332,6 +415,12 @@ struct MirrorTest : public TestBase {
         sai_hostif_api = nullptr;
         sai_fdb_api = nullptr;
         sai_lag_api = nullptr;
+    }
+
+    shared_ptr<MockMirrorOrch> createMirrorOrch()
+    {
+        return make_shared<MockMirrorOrch>(m_config_db.get(), m_state_db.get(), gPortsOrch, gRouteOrch,
+            gNeighOrch, gFdbOrch);
     }
 
     shared_ptr<SaiAttributeList> getMirrorAttributeList(sai_object_type_t objecttype, const MirrorEntry& entry)
@@ -432,79 +521,79 @@ struct MirrorTest : public TestBase {
 
     void add_ip_addr(string interface, string ip)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_INTF_TABLE_NAME, 1, 1), gIntfsOrch, APP_INTF_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { interface + ":" + ip, SET_COMMAND, {} } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gIntfsOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gIntfsOrch)->doTask(*consumer);
     }
 
     void add_neighbor(string interface, string ip, string mac)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_NEIGH_TABLE_NAME, 1, 1), gNeighOrch, APP_NEIGH_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { interface + ":" + ip, SET_COMMAND, { { "neigh", mac } } } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gNeighOrch)->doTask(*consumer);
     }
 
     void remove_neighbor(string interface, string ip)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_NEIGH_TABLE_NAME, 1, 1), gNeighOrch, APP_NEIGH_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { interface + ":" + ip, DEL_COMMAND, {} } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gNeighOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gNeighOrch)->doTask(*consumer);
     }
 
     void add_route(string prefix, string nexthop, string interface)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_ROUTE_TABLE_NAME, 1, 1), gRouteOrch, APP_ROUTE_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { prefix, SET_COMMAND, { { "nexthop", nexthop }, { "ifname", interface } } } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gRouteOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gRouteOrch)->doTask(*consumer);
     }
 
     void remove_route(string prefix)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_ROUTE_TABLE_NAME, 1, 1), gRouteOrch, APP_ROUTE_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { prefix, DEL_COMMAND, {} } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gRouteOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gRouteOrch)->doTask(*consumer);
     }
 
     string create_vlan(int vlan)
     {
         string vlan_key = "Vlan" + to_string(vlan);
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_VLAN_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { vlan_key, SET_COMMAND, {} } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
         return vlan_key;
     }
 
     void add_vlan_member(int vlan, string interface)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_VLAN_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_MEMBER_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { "Vlan" + to_string(vlan) + ":" + interface, SET_COMMAND, { { "tagging_mode", "untagged" } } } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
     }
 
     void create_fdb(int vlan, string mac, string interface)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_FDB_TABLE_NAME, 1, 1), gPortsOrch, APP_FDB_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { "Vlan" + to_string(vlan) + ":" + mac,
@@ -513,52 +602,51 @@ struct MirrorTest : public TestBase {
                     { "port", interface },
                     { "type", "dynamic" },
                 } } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gFdbOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gFdbOrch)->doTask(*consumer);
     }
 
     void remove_fdb(int vlan, string mac)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_FDB_TABLE_NAME, 1, 1), gPortsOrch, APP_FDB_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { "Vlan" + to_string(vlan) + ":" + mac, DEL_COMMAND, {} } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gFdbOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gFdbOrch)->doTask(*consumer);
     }
 
     void create_port_channel(string channel)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_LAG_TABLE_NAME, 1, 1), gPortsOrch, APP_LAG_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { channel, SET_COMMAND, { { "admin", "up" }, { "mtu", "9100" } } } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
     }
 
     void create_port_channel_member(string channel, string interface)
     {
-        auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
+        auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_LAG_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_LAG_MEMBER_TABLE_NAME));
         auto setData = deque<KeyOpFieldsValuesTuple>(
             { { channel + ":" + interface, SET_COMMAND, { { "status", "enabled" } } } });
-        consumerExt->addToSync(setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumerExt);
+        consumerAddToSync(consumer.get(), setData);
+        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
     }
 };
 
-TEST_F(MirrorTest, Create_And_Delete_Session)
-{
-    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+map<string, string> MirrorOrchTest::gProfileMap;
+map<string, string>::iterator MirrorOrchTest::gProfileIter = MirrorOrchTest::gProfileMap.begin();
 
-    auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
-        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-    string mirror_session_name = "mirror_session_1";
+TEST_F(MirrorOrchTest, Create_And_Delete_Session)
+{
+    auto orch = createMirrorOrch();
+
+    string session_name = "mirror_session_1";
     auto mirror_cfg = deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
+        { { session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
@@ -568,40 +656,34 @@ TEST_F(MirrorTest, Create_And_Delete_Session)
                 { "ttl", "100" },
                 { "queue", "0" },
             } } });
-    consumerExt->addToSync(mirror_cfg);
 
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+    orch->doMirrorTask(mirror_cfg);
 
-    bool session_state;
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    const auto& mirror_table = orch->getMirrorTable();
+    auto it = mirror_table.find(session_name);
+    ASSERT_NE(it, mirror_table.end()); // session exist
+    const auto& mirror_entry = it->second;
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 
-    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
     ASSERT_EQ(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())), true);
 
     auto del_cfg = deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
+        { { session_name,
             DEL_COMMAND,
             {} } });
-    consumerExt->addToSync(del_cfg);
+    orch->doMirrorTask(del_cfg);
 
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
-
-    ASSERT_NE(mirror_orch.sessionExists(mirror_session_name), true); // session not exist
+    ASSERT_EQ(mirror_table.find(session_name), mirror_table.end()); // session not exist
 }
 
-TEST_F(MirrorTest, Activate_And_Deactivate_Session)
+TEST_F(MirrorOrchTest, Activate_And_Deactivate_Session)
 {
-    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+    auto orch = createMirrorOrch();
 
-    auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
-        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-    string mirror_session_name = "mirror_session_1";
+    string session_name = "mirror_session_1";
     string dst_ip = "2.2.2.2";
     auto mirror_cfg = deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
+        { { session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
@@ -611,13 +693,14 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session)
                 { "ttl", "100" },
                 { "queue", "1" },
             } } });
-    consumerExt->addToSync(mirror_cfg);
 
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+    orch->doMirrorTask(mirror_cfg);
 
-    bool session_state;
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    const auto& mirror_table = orch->getMirrorTable();
+    auto it = mirror_table.find(session_name);
+    ASSERT_NE(it, mirror_table.end()); // session exist
+    const auto& mirror_entry = it->second;
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 
     string exp_port = "Ethernet0";
     string exp_mac = "00:01:02:03:04:05";
@@ -628,10 +711,8 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session)
     // add neighbor to activate session
     add_neighbor(exp_port, dst_ip, exp_mac);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, true); // session active
+    ASSERT_EQ(mirror_entry.status, true); // session active
 
-    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
     Port p;
     ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
     ASSERT_EQ(mirror_entry.neighborInfo.portId, p.m_port_id);
@@ -639,7 +720,7 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session)
     ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
 
     sai_object_id_t session_oid;
-    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+    ASSERT_TRUE(orch->getSessionOid(session_name, session_oid));
 
     const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
     auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
@@ -648,22 +729,17 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session)
     // remove neighbor to deactivate session
     remove_neighbor(exp_port, dst_ip);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 }
 
-TEST_F(MirrorTest, Activate_And_Deactivate_Session_2)
+TEST_F(MirrorOrchTest, Activate_And_Deactivate_Session_2)
 {
-    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+    auto orch = createMirrorOrch();
 
-    auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
-        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-    string mirror_session_name = "mirror_session_1";
+    string session_name = "mirror_session_1";
     string dst_ip = "2.2.2.2";
     auto mirror_cfg = deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
+        { { session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
@@ -673,13 +749,14 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session_2)
                 { "ttl", "100" },
                 { "queue", "1" },
             } } });
-    consumerExt->addToSync(mirror_cfg);
 
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+    orch->doMirrorTask(mirror_cfg);
 
-    bool session_state;
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    const auto& mirror_table = orch->getMirrorTable();
+    auto it = mirror_table.find(session_name);
+    ASSERT_NE(it, mirror_table.end()); // session exist
+    const auto& mirror_entry = it->second;
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 
     string exp_port = "Ethernet0";
     string exp_mac = "00:01:02:03:04:05";
@@ -694,10 +771,8 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session_2)
     // add route to activate session
     add_route(dst_ip, exp_nexthop, exp_port);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, true); // session active
+    ASSERT_EQ(mirror_entry.status, true); // session active
 
-    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
     Port p;
     ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
     ASSERT_EQ(mirror_entry.neighborInfo.portId, p.m_port_id);
@@ -705,7 +780,7 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session_2)
     ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
 
     sai_object_id_t session_oid;
-    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+    ASSERT_TRUE(orch->getSessionOid(session_name, session_oid));
 
     const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
     auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
@@ -714,22 +789,17 @@ TEST_F(MirrorTest, Activate_And_Deactivate_Session_2)
     // remove route to deactivate session
     remove_route(dst_ip);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 }
 
-TEST_F(MirrorTest, MirrorToVlan)
+TEST_F(MirrorOrchTest, MirrorToVlan)
 {
-    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+    auto orch = createMirrorOrch();
 
-    auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
-        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-    string mirror_session_name = "mirror_session_1";
+    string session_name = "mirror_session_1";
     string dst_ip = "2.2.2.2";
     auto mirror_cfg = deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
+        { { session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
@@ -739,13 +809,14 @@ TEST_F(MirrorTest, MirrorToVlan)
                 { "ttl", "100" },
                 { "queue", "1" },
             } } });
-    consumerExt->addToSync(mirror_cfg);
 
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+    orch->doMirrorTask(mirror_cfg);
 
-    bool session_state;
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    const auto& mirror_table = orch->getMirrorTable();
+    auto it = mirror_table.find(session_name);
+    ASSERT_NE(it, mirror_table.end()); // session exist
+    const auto& mirror_entry = it->second;
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 
     string exp_port = "Ethernet0";
     string exp_mac = "00:01:02:03:04:05";
@@ -766,10 +837,8 @@ TEST_F(MirrorTest, MirrorToVlan)
     // add fdb to activate session
     create_fdb(exp_vlan, exp_mac, exp_port);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, true); // session active
+    ASSERT_EQ(mirror_entry.status, true); // session active
 
-    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
     Port p;
     ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
     ASSERT_EQ(mirror_entry.neighborInfo.portId, p.m_port_id);
@@ -777,7 +846,7 @@ TEST_F(MirrorTest, MirrorToVlan)
     ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
 
     sai_object_id_t session_oid;
-    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+    ASSERT_TRUE(orch->getSessionOid(session_name, session_oid));
 
     const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
     auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
@@ -786,22 +855,17 @@ TEST_F(MirrorTest, MirrorToVlan)
     // remove fdb to deactivate session
     remove_fdb(exp_vlan, exp_mac);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 }
 
-TEST_F(MirrorTest, MirrorToLAG)
+TEST_F(MirrorOrchTest, MirrorToLAG)
 {
-    TableConnector stateDbMirrorSession(m_state_db.get(), APP_MIRROR_SESSION_TABLE_NAME);
-    TableConnector confDbMirrorSession(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME);
-    auto mirror_orch = MirrorOrch(stateDbMirrorSession, confDbMirrorSession, gPortsOrch, gRouteOrch, gNeighOrch, gFdbOrch);
+    auto orch = createMirrorOrch();
 
-    auto consumerExt = unique_ptr<ConsumerExtend>(new ConsumerExtend(
-        new ConsumerStateTable(m_config_db.get(), CFG_MIRROR_SESSION_TABLE_NAME, 1, 1), &mirror_orch, CFG_MIRROR_SESSION_TABLE_NAME));
-    string mirror_session_name = "mirror_session_1";
+    string session_name = "mirror_session_1";
     string dst_ip = "2.2.2.2";
     auto mirror_cfg = deque<KeyOpFieldsValuesTuple>(
-        { { mirror_session_name,
+        { { session_name,
             SET_COMMAND,
             {
                 { "src_ip", "1.1.1.1" },
@@ -811,13 +875,14 @@ TEST_F(MirrorTest, MirrorToLAG)
                 { "ttl", "100" },
                 { "queue", "1" },
             } } });
-    consumerExt->addToSync(mirror_cfg);
 
-    static_cast<Orch*>(&mirror_orch)->doTask(*consumerExt);
+    orch->doMirrorTask(mirror_cfg);
 
-    bool session_state;
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    const auto& mirror_table = orch->getMirrorTable();
+    auto it = mirror_table.find(session_name);
+    ASSERT_NE(it, mirror_table.end()); // session exist
+    const auto& mirror_entry = it->second;
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 
     string exp_port = "Ethernet0";
     string exp_mac = "00:01:02:03:04:05";
@@ -835,10 +900,8 @@ TEST_F(MirrorTest, MirrorToLAG)
     // add neighbor to activate session
     add_neighbor(exp_lag, dst_ip, exp_mac);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, true); // session active
+    ASSERT_EQ(mirror_entry.status, true); // session active
 
-    auto mirror_entry = mirror_orch.m_syncdMirrors.find(mirror_session_name)->second;
     Port p;
     ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));
     ASSERT_EQ(mirror_entry.neighborInfo.portId, p.m_port_id);
@@ -846,7 +909,7 @@ TEST_F(MirrorTest, MirrorToLAG)
     ASSERT_TRUE(ValidateMirrorEntryByConfOp(mirror_entry, kfvFieldsValues(mirror_cfg.front())));
 
     sai_object_id_t session_oid;
-    ASSERT_TRUE(mirror_orch.getSessionOid(mirror_session_name, session_oid));
+    ASSERT_TRUE(orch->getSessionOid(session_name, session_oid));
 
     const sai_object_type_t objecttype = SAI_OBJECT_TYPE_MIRROR_SESSION;
     auto exp_attrlist = getMirrorAttributeList(objecttype, mirror_entry);
@@ -855,8 +918,7 @@ TEST_F(MirrorTest, MirrorToLAG)
     // remove neighbor to deactivate session
     remove_neighbor(exp_lag, dst_ip);
 
-    ASSERT_TRUE(mirror_orch.getSessionStatus(mirror_session_name, session_state)); // session exist
-    ASSERT_EQ(session_state, false); // session inactive
+    ASSERT_EQ(mirror_entry.status, false); // session inactive
 }
 
 }
