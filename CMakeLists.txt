@@ -147,9 +147,10 @@ configure_file (
 file(GLOB TESTS
     main.cpp
     tests/fake_main.cpp
-    tests/aclorch_ut.cpp
-    tests/copporch_ut.cpp
-    tests/qosorch_ut.cpp
+#    tests/aclorch_ut.cpp
+#    tests/copporch_ut.cpp
+#    tests/qosorch_ut.cpp
+    tests/fdborch_ut.cpp
     tests/saispy_ut.cpp
 )
 
