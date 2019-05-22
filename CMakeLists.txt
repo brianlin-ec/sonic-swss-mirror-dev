@@ -151,6 +151,7 @@ file(GLOB TESTS
 #    tests/copporch_ut.cpp
 #    tests/qosorch_ut.cpp
     tests/fdborch_ut.cpp
+    tests/portsorch_ut.cpp
     tests/saispy_ut.cpp
 )
 

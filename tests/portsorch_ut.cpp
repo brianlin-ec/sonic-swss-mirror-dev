@@ -14,9 +14,8 @@ extern sai_vlan_api_t* sai_vlan_api;
 extern sai_bridge_api_t* sai_bridge_api;
 extern sai_route_api_t* sai_route_api;
 extern sai_hostif_api_t* sai_hostif_api;
-extern sai_fdb_api_t* sai_fdb_api;
 
-namespace nsFdbOrchTest {
+namespace nsPortsOrchTest {
 
 using namespace std;
 
@@ -105,53 +104,19 @@ struct TestBase : public ::testing::Test {
     }
 };
 
-struct MockFdbOrch {
-    FdbOrch* m_fdbOrch;
-    swss::DBConnector* app_db;
-
-    MockFdbOrch(swss::DBConnector* app_db, swss::DBConnector* state_db, PortsOrch* portOrch)
-        : app_db(app_db)
-    {
-        TableConnector applDbFdb(app_db, APP_FDB_TABLE_NAME);
-        TableConnector stateDbFdb(state_db, STATE_FDB_TABLE_NAME);
-
-        m_fdbOrch = new FdbOrch(applDbFdb, stateDbFdb, gPortsOrch);
-    }
-
-    ~MockFdbOrch()
-    {
-        delete m_fdbOrch;
-    }
-
-    operator const FdbOrch*() const
-    {
-        return m_fdbOrch;
-    }
-
-    void doFdbTask(const deque<KeyOpFieldsValuesTuple>& entries)
-    {
-        auto consumer = unique_ptr<Consumer>(new Consumer(
-            new swss::ConsumerStateTable(app_db, APP_FDB_TABLE_NAME, 1, 1), m_fdbOrch, APP_FDB_TABLE_NAME));
-
-        consumerAddToSync(consumer.get(), entries);
-
-        static_cast<Orch*>(m_fdbOrch)->doTask(*consumer);
-    }
-};
-
-struct FdbOrchTest : public TestBase {
+struct PortsOrchTest : public TestBase {
 
     shared_ptr<swss::DBConnector> m_app_db;
     shared_ptr<swss::DBConnector> m_config_db;
     shared_ptr<swss::DBConnector> m_state_db;
 
-    FdbOrchTest()
+    PortsOrchTest()
     {
         m_app_db = make_shared<swss::DBConnector>(APPL_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
         m_config_db = make_shared<swss::DBConnector>(CONFIG_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
         m_state_db = make_shared<swss::DBConnector>(STATE_DB, swss::DBConnector::DEFAULT_UNIXSOCKET, 0);
     }
-    ~FdbOrchTest()
+    ~PortsOrchTest()
     {
     }
 
@@ -202,8 +167,8 @@ struct FdbOrchTest : public TestBase {
         gProfileMap.emplace("KV_DEVICE_MAC_ADDRESS", "20:03:04:05:06:00");
 
         sai_service_method_table_t test_services = {
-            FdbOrchTest::profile_get_value,
-            FdbOrchTest::profile_get_next_value
+            PortsOrchTest::profile_get_value,
+            PortsOrchTest::profile_get_next_value
         };
 
         auto status = sai_api_initialize(0, (sai_service_method_table_t*)&test_services);
@@ -216,7 +181,6 @@ struct FdbOrchTest : public TestBase {
         sai_bridge_api = const_cast<sai_bridge_api_t*>(&vs_bridge_api);
         sai_route_api = const_cast<sai_route_api_t*>(&vs_route_api);
         sai_hostif_api = const_cast<sai_hostif_api_t*>(&vs_hostif_api);
-        sai_fdb_api = const_cast<sai_fdb_api_t*>(&vs_fdb_api);
 #endif
 
         sai_attribute_t attr;
@@ -334,12 +298,6 @@ struct FdbOrchTest : public TestBase {
         sai_bridge_api = nullptr;
         sai_route_api = nullptr;
         sai_hostif_api = nullptr;
-        sai_fdb_api = nullptr;
-    }
-
-    shared_ptr<MockFdbOrch> createFdbOrch()
-    {
-        return make_shared<MockFdbOrch>(m_app_db.get(), m_state_db.get(), gPortsOrch);
     }
 
     // shared_ptr<SaiAttributeList> getMirrorAttributeList(sai_object_type_t objecttype, const MirrorEntry& entry)
@@ -367,10 +325,10 @@ struct FdbOrchTest : public TestBase {
             act_attr.emplace_back(new_attr);
         }
 
-        // auto status = sai_fdb_api->get_fdb_entry_attribute(object_id, act_attr.size(), act_attr.data());
-        // if (status != SAI_STATUS_SUCCESS) {
-        //     return false;
-        // }
+        auto status = sai_port_api->get_port_attribute(object_id, act_attr.size(), act_attr.data());
+        if (status != SAI_STATUS_SUCCESS) {
+            return false;
+        }
 
         auto b_attr_eq = AttrListEq(objecttype, act_attr, exp_attrlist);
         if (!b_attr_eq) {
@@ -413,27 +371,27 @@ struct FdbOrchTest : public TestBase {
     //     return true;
     // }
 
-    string create_vlan(int vlan)
-    {
-        string vlan_key = "Vlan" + to_string(vlan);
-        auto consumer = unique_ptr<Consumer>(new Consumer(
-            new ConsumerStateTable(m_app_db.get(), APP_VLAN_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_TABLE_NAME));
-        auto setData = deque<KeyOpFieldsValuesTuple>(
-            { { vlan_key, SET_COMMAND, {} } });
-        consumerAddToSync(consumer.get(), setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
-        return vlan_key;
-    }
+    // string create_vlan(int vlan)
+    // {
+    //     string vlan_key = "Vlan" + to_string(vlan);
+    //     auto consumer = unique_ptr<Consumer>(new Consumer(
+    //         new ConsumerStateTable(m_app_db.get(), APP_VLAN_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_TABLE_NAME));
+    //     auto setData = deque<KeyOpFieldsValuesTuple>(
+    //         { { vlan_key, SET_COMMAND, {} } });
+    //     consumerAddToSync(consumer.get(), setData);
+    //     static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
+    //     return vlan_key;
+    // }
 
-    void add_vlan_member(int vlan, string interface)
-    {
-        auto consumer = unique_ptr<Consumer>(new Consumer(
-            new ConsumerStateTable(m_app_db.get(), APP_VLAN_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_MEMBER_TABLE_NAME));
-        auto setData = deque<KeyOpFieldsValuesTuple>(
-            { { "Vlan" + to_string(vlan) + ":" + interface, SET_COMMAND, { { "tagging_mode", "untagged" } } } });
-        consumerAddToSync(consumer.get(), setData);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
-    }
+    // void add_vlan_member(int vlan, string interface)
+    // {
+    //     auto consumer = unique_ptr<Consumer>(new Consumer(
+    //         new ConsumerStateTable(m_app_db.get(), APP_VLAN_MEMBER_TABLE_NAME, 1, 1), gPortsOrch, APP_VLAN_MEMBER_TABLE_NAME));
+    //     auto setData = deque<KeyOpFieldsValuesTuple>(
+    //         { { "Vlan" + to_string(vlan) + ":" + interface, SET_COMMAND, { { "tagging_mode", "untagged" } } } });
+    //     consumerAddToSync(consumer.get(), setData);
+    //     static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
+    // }
 
     // void create_port_channel(string channel)
     // {
@@ -456,50 +414,12 @@ struct FdbOrchTest : public TestBase {
     // }
 };
 
-map<string, string> FdbOrchTest::gProfileMap;
-map<string, string>::iterator FdbOrchTest::gProfileIter = FdbOrchTest::gProfileMap.begin();
+map<string, string> PortsOrchTest::gProfileMap;
+map<string, string>::iterator PortsOrchTest::gProfileIter = PortsOrchTest::gProfileMap.begin();
 
-TEST_F(FdbOrchTest, foo)
+TEST_F(PortsOrchTest, foo)
 {
-    auto orch = createFdbOrch();
-
-    string exp_port = "Ethernet0";
-    string exp_mac = "00:01:02:03:04:05";
-    int exp_vlan = 1;
-
-    // create vlan
-    string vlan_str = create_vlan(exp_vlan);
-
-    // add vlan member
-    add_vlan_member(exp_vlan, exp_port);
-
-    auto setData = deque<KeyOpFieldsValuesTuple>(
-        { { "Vlan" + to_string(exp_vlan) + ":" + exp_mac,
-            SET_COMMAND,
-            {
-                { "port", exp_port },
-                { "type", "dynamic" },
-            } } });
-
-    orch->doFdbTask(setData);
-
-    Port p;
-    ASSERT_TRUE(gPortsOrch->getVlanByVlanId(exp_vlan, p));
-
-    MacAddress mac(exp_mac);
-    sai_fdb_entry_t entry;
-    entry.switch_id = gSwitchId;
-    memcpy(entry.mac_address, mac.getMac(), sizeof(sai_mac_t));
-    entry.bv_id = p.m_vlan_info.vlan_oid;
-
-    sai_attribute_t attr;
-    attr.id = SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID;
-
-    sai_status_t status = sai_fdb_api->get_fdb_entry_attribute(&entry, 1, &attr);
-    ASSERT_EQ(status, SAI_STATUS_SUCCESS);
-
-    ASSERT_TRUE(gPortsOrch->getPortByBridgePortId(attr.value.oid, p));
-    ASSERT_EQ(p.m_alias, exp_port);
+    ASSERT_EQ(true, true);
 }
 
 }
