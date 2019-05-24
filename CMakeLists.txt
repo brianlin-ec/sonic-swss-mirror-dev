@@ -147,7 +147,8 @@ configure_file (
 file(GLOB TESTS
     main.cpp
 #    tests/test_aclorch.cpp
-    tests/test_mirrororch.cpp
+#    tests/test_mirrororch.cpp
+     tests/test_portsorch.cpp
 )
 
 file(GLOB COPP_TESTS
