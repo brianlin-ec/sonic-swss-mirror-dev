@@ -323,7 +323,7 @@ struct PortsOrchTest : public TestBase {
                     { { "lanes", lan_map_str },
                       { "speed", "1000" },
                       { "mtu", "6000" },
-                      { "admin_status", "up" },
+                      { "admin_status", "down" },
                     } 
                 }
             );
@@ -423,53 +423,25 @@ TEST_F(PortsOrchTest, PortMTUTest)
     sai_attribute_t attr;
     auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
-      /* Get port number */
-        attr.id = SAI_SWITCH_ATTR_PORT_NUMBER;
-        auto status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
-        ASSERT_EQ(status, SAI_STATUS_SUCCESS);
-        auto port_count = attr.value.u32;
-     /* Get port list */
-        vector<sai_object_id_t> port_list;
-        port_list.resize(port_count);
-        attr.id = SAI_SWITCH_ATTR_PORT_LIST;
-        attr.value.objlist.count = (uint32_t)port_list.size();
-        attr.value.objlist.list = port_list.data();
-        status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
-        ASSERT_EQ(status, SAI_STATUS_SUCCESS);   
-        exp_mtu +=22; 
-        deque<KeyOpFieldsValuesTuple> port_init_tuple;
-        for (auto i = 0; i < port_count; i++) {
-            string lan_map_str = "";
-            sai_uint32_t lanes[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-            attr.id = SAI_PORT_ATTR_HW_LANE_LIST;
-            attr.value.u32list.count = 8;
-            attr.value.u32list.list = lanes;
-            status = sai_port_api->get_port_attribute(port_list[i], 1, &attr);
-            ASSERT_EQ(status, SAI_STATUS_SUCCESS);
+    
+    /* mtu + 14 + 4 + 4 = 22 bytes */
+    /* sizeof(struct ether_header) + FCS_LEN + VLAN_TAG_LEN */
+    exp_mtu +=22;
+    deque<KeyOpFieldsValuesTuple> port_init_tuple;        
 
-            for (auto j = 0; j < attr.value.u32list.count; j++) {
-                if (j != 0)
-                    lan_map_str += ",";
-                lan_map_str += to_string(attr.value.u32list.list[j]);
-            }
-
-            port_init_tuple.push_back(
-                { "Ethernet" + to_string(i), 
-                    SET_COMMAND, 
-                    { { "lanes", lan_map_str },
-                      { "mtu", "9100" }, 
-                    } 
-                }
-            );            
-        }
-        port_init_tuple.push_back({ "PortConfigDone", SET_COMMAND, { { "count", to_string(port_count) } } });
-        port_init_tuple.push_back({ "PortInitDone", EMPTY_PREFIX, { { "", "" } } });
-   
-        consumerAddToSync(consumer.get(), port_init_tuple);
-        static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
+    port_init_tuple.push_back(
+        { "Ethernet1", 
+            SET_COMMAND, 
+            { { "lanes", "25,26,27,28" },
+            { "mtu", "9100" }, 
+            } 
+        });            
+        
+    consumerAddToSync(consumer.get(), port_init_tuple);
+    static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
                 
-        ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));  
-        ASSERT_TRUE(Validate(&p, exp_mtu, SAI_PORT_ATTR_MTU));          
+    ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));  
+    ASSERT_TRUE(Validate(&p, exp_mtu, SAI_PORT_ATTR_MTU));          
 }
 
 TEST_F(PortsOrchTest, PortSpeedTest)
@@ -481,48 +453,18 @@ TEST_F(PortsOrchTest, PortSpeedTest)
     sai_attribute_t attr;
     auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
-            
-    /* Get port number */
-    attr.id = SAI_SWITCH_ATTR_PORT_NUMBER;
-    auto status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
-    ASSERT_EQ(status, SAI_STATUS_SUCCESS);
-    auto port_count = attr.value.u32;
-    /* Get port list */
-    vector<sai_object_id_t> port_list;
-    port_list.resize(port_count);
-    attr.id = SAI_SWITCH_ATTR_PORT_LIST;
-    attr.value.objlist.count = (uint32_t)port_list.size();
-    attr.value.objlist.list = port_list.data();
-    status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
-    ASSERT_EQ(status, SAI_STATUS_SUCCESS);   
+        
     deque<KeyOpFieldsValuesTuple> port_init_tuple;
     for (auto jj = 0; jj < PORT_SPEED_TYPE; jj++) {
-        exp_speed = speed_list[jj];
-        for (auto i = 0; i < port_count; i++) {
-            string lan_map_str = "";
-            sai_uint32_t lanes[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-            attr.id = SAI_PORT_ATTR_HW_LANE_LIST;
-            attr.value.u32list.count = 8;
-            attr.value.u32list.list = lanes;
-            status = sai_port_api->get_port_attribute(port_list[i], 1, &attr);
-            ASSERT_EQ(status, SAI_STATUS_SUCCESS);
-            for (auto j = 0; j < attr.value.u32list.count; j++) {
-                if (j != 0)
-                    lan_map_str += ",";
-                lan_map_str += to_string(attr.value.u32list.list[j]);
-            }
-            port_init_tuple.push_back(
-                { "Ethernet" + to_string(i), 
-                    SET_COMMAND, 
-                    { { "lanes", lan_map_str },
-                    { "speed", to_string(exp_speed) },
-                    } 
-                }
-            );            
-        }
-        port_init_tuple.push_back({ "PortConfigDone", SET_COMMAND, { { "count", to_string(port_count) } } });
-        port_init_tuple.push_back({ "PortInitDone", EMPTY_PREFIX, { { "", "" } } });
-   
+        exp_speed = speed_list[jj];   
+        port_init_tuple.push_back(
+        { "Ethernet1", 
+            SET_COMMAND, 
+            { { "lanes", "25,26,27,28" },
+            { "speed", to_string(exp_speed)}, 
+            } 
+        });                                   
+        
         consumerAddToSync(consumer.get(), port_init_tuple);
         static_cast<Orch*>(gPortsOrch)->doTask(*consumer);               
                 
@@ -539,48 +481,15 @@ TEST_F(PortsOrchTest, PortAdminTest)
     sai_attribute_t attr;
     auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
-            
-    /* Get port number */
-    attr.id = SAI_SWITCH_ATTR_PORT_NUMBER;
-    auto status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
-    ASSERT_EQ(status, SAI_STATUS_SUCCESS);
-    auto port_count = attr.value.u32;
-    /* Get port list */
-    vector<sai_object_id_t> port_list;
-    port_list.resize(port_count);
-    attr.id = SAI_SWITCH_ATTR_PORT_LIST;
-    attr.value.objlist.count = (uint32_t)port_list.size();
-    attr.value.objlist.list = port_list.data();
-    status = sai_switch_api->get_switch_attribute(gSwitchId, 1, &attr);
-    ASSERT_EQ(status, SAI_STATUS_SUCCESS);   
+    
     deque<KeyOpFieldsValuesTuple> port_init_tuple;
-    for (auto i = 0; i < port_count; i++) {
-         string lan_map_str = "";
-         sai_uint32_t lanes[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
-         attr.id = SAI_PORT_ATTR_HW_LANE_LIST;
-         attr.value.u32list.count = 8;
-         attr.value.u32list.list = lanes;
-         status = sai_port_api->get_port_attribute(port_list[i], 1, &attr);
-         ASSERT_EQ(status, SAI_STATUS_SUCCESS);
-
-         for (auto j = 0; j < attr.value.u32list.count; j++) {
-                if (j != 0)
-                    lan_map_str += ",";
-                lan_map_str += to_string(attr.value.u32list.list[j]);
-         }
-
-         port_init_tuple.push_back(
-             { "Ethernet" + to_string(i), 
-                SET_COMMAND, 
-                { { "lanes", lan_map_str },
-                   { "admin_status", "up" },
-                } 
-            }
-        );            
-    }
-    port_init_tuple.push_back({ "PortConfigDone", SET_COMMAND, { { "count", to_string(port_count) } } });
-    port_init_tuple.push_back({ "PortInitDone", EMPTY_PREFIX, { { "", "" } } });
-   
+    port_init_tuple.push_back(
+        { "Ethernet1", 
+            SET_COMMAND, 
+            { { "lanes", "25,26,27,28" },
+            { "admin_status", "up"}, 
+            } 
+        });                       
     consumerAddToSync(consumer.get(), port_init_tuple);
     static_cast<Orch*>(gPortsOrch)->doTask(*consumer);           
         
