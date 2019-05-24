@@ -380,6 +380,11 @@ struct PortsOrchTest : public TestBase {
         if (status != SAI_STATUS_SUCCESS) {
             return false;
         }
+        /* mtu + 14 + 4 + 4 = 22 bytes */
+        /* sizeof(struct ether_header) + FCS_LEN + VLAN_TAG_LEN */
+        if(attr_id ==SAI_PORT_ATTR_MTU)
+            exp_value +=22;
+                         
         if (exp_value != attr.value.u32) {
             return false;
         }
@@ -423,21 +428,18 @@ TEST_F(PortsOrchTest, PortMTUTest)
     sai_attribute_t attr;
     auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
-    
-    /* mtu + 14 + 4 + 4 = 22 bytes */
-    /* sizeof(struct ether_header) + FCS_LEN + VLAN_TAG_LEN */
-    exp_mtu +=22;
-    deque<KeyOpFieldsValuesTuple> port_init_tuple;        
+       
+    deque<KeyOpFieldsValuesTuple> setData;        
 
-    port_init_tuple.push_back(
+    setData.push_back(
         { "Ethernet1", 
             SET_COMMAND, 
             { { "lanes", "25,26,27,28" },
-            { "mtu", "9100" }, 
+            { "mtu", to_string(exp_mtu) }, 
             } 
-        });            
+        });
         
-    consumerAddToSync(consumer.get(), port_init_tuple);
+    consumerAddToSync(consumer.get(), setData);
     static_cast<Orch*>(gPortsOrch)->doTask(*consumer);
                 
     ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));  
@@ -447,17 +449,17 @@ TEST_F(PortsOrchTest, PortMTUTest)
 TEST_F(PortsOrchTest, PortSpeedTest)
 {
     Port p;
-    string exp_port = "Ethernet1";    
+    string exp_port = "Ethernet1";
     uint32_t exp_speed = 10000;
     uint32_t speed_list[PORT_SPEED_TYPE] = {10000, 25000, 40000, 50000, 100000};
     sai_attribute_t attr;
     auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
         
-    deque<KeyOpFieldsValuesTuple> port_init_tuple;
+    deque<KeyOpFieldsValuesTuple> setData;
     for (auto jj = 0; jj < PORT_SPEED_TYPE; jj++) {
         exp_speed = speed_list[jj];   
-        port_init_tuple.push_back(
+        setData.push_back(
         { "Ethernet1", 
             SET_COMMAND, 
             { { "lanes", "25,26,27,28" },
@@ -465,7 +467,7 @@ TEST_F(PortsOrchTest, PortSpeedTest)
             } 
         });                                   
         
-        consumerAddToSync(consumer.get(), port_init_tuple);
+        consumerAddToSync(consumer.get(), setData);
         static_cast<Orch*>(gPortsOrch)->doTask(*consumer);               
                 
         ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));  
@@ -482,15 +484,15 @@ TEST_F(PortsOrchTest, PortAdminTest)
     auto consumer = unique_ptr<Consumer>(new Consumer(
             new ConsumerStateTable(m_app_db.get(), APP_PORT_TABLE_NAME, 1, 1), gPortsOrch, APP_PORT_TABLE_NAME));
     
-    deque<KeyOpFieldsValuesTuple> port_init_tuple;
-    port_init_tuple.push_back(
+    deque<KeyOpFieldsValuesTuple> setData;
+    setData.push_back(
         { "Ethernet1", 
             SET_COMMAND, 
             { { "lanes", "25,26,27,28" },
             { "admin_status", "up"}, 
             } 
         });                       
-    consumerAddToSync(consumer.get(), port_init_tuple);
+    consumerAddToSync(consumer.get(), setData);
     static_cast<Orch*>(gPortsOrch)->doTask(*consumer);           
         
     ASSERT_TRUE(gPortsOrch->getPort(exp_port, p));  
